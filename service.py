@@ -1,6 +1,7 @@
 """
 service.py — CRUD manager for ExternalService records.
 """
+import asyncio
 import re
 from typing import List, Optional
 
@@ -8,6 +9,7 @@ from core.components.database.logic.db_service import db_instance
 from core.logger import get_logger
 
 from .models import ExternalService
+from .routing import register_service
 
 log = get_logger("Plugin:ExternalServices")
 
@@ -49,7 +51,7 @@ class ExternalServiceManager:
                     else:
                         log.warning(f"MIGRATE: Could not add `{table}.{column}`: {e}")
 
-    # ── Reads ─────────────────────────────────────────────────────────────────
+    # ── Reads ──────────────────────────────────────────────────────────────────
 
     def get_all(self) -> List[ExternalService]:
         with db_instance.SessionLocal() as s:
@@ -82,7 +84,7 @@ class ExternalServiceManager:
                 s.expunge(row)
             return row
 
-    # ── Writes ────────────────────────────────────────────────────────────────
+    # ── Writes ─────────────────────────────────────────────────────────────────
 
     def upsert(
         self,
@@ -153,6 +155,35 @@ class ExternalServiceManager:
             s.commit()
             log.info(f"DELETE: Removed external service id={service_id}.")
             return True
+
+    # ── Event handler ──────────────────────────────────────────────────────────
+
+    async def handle_register_event(self, ctx, payload: dict) -> None:
+        """Handle the external_services:register event bus payload."""
+        if not isinstance(payload, dict):
+            ctx.log.warning("external_services:register received non-dict payload, ignoring.")
+            return
+
+        raw_slug = payload.get("route") or payload.get("service", "service")
+        slug = re.sub(r"[^a-z0-9-]", "-", raw_slug.lower()).strip("-") or "service"
+
+        try:
+            svc = await asyncio.to_thread(
+                self.upsert,
+                slug=slug,
+                name=payload.get("name", slug),
+                url=payload.get("url", ""),
+                icon=payload.get("icon", "open_in_browser"),
+                service_type=payload.get("type", "iframe"),
+                open_mode=payload.get("open_mode", "iframe"),
+                show_in_nav=bool(payload.get("show_in_nav", True)),
+                description=payload.get("description", ""),
+                enabled=bool(payload.get("enabled", True)),
+            )
+            register_service(svc)
+            ctx.log.info(f"External Services: registered '{svc.name}' via event bus.")
+        except Exception as exc:
+            ctx.log.error(f"External Services: failed to register '{slug}' from event: {exc}")
 
 
 ext_service_manager = ExternalServiceManager()
