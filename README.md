@@ -143,17 +143,27 @@ Or use the event bus directly if both run in the same process.
 
 ---
 
-## File structure
+## Project structure
 
 ```
-lyndrix-external-services/
-├── entrypoint.py      # Plugin manifest + setup() + bus subscriptions
-├── models.py          # SQLAlchemy ExternalService ORM model
-├── service.py         # CRUD manager (ext_service_manager singleton)
-├── routing.py         # Dynamic NiceGUI page + sidebar injection
-├── api.py             # FastAPI router (/api/external-services/)
-├── ui_overview.py     # Hub page /external — service cards
-└── ui_settings.py     # Settings modal — add / edit / delete
+lyndrix-plugin-external-services/
+├── entrypoint.py
+├── requirements.txt
+├── requirements-dev.txt
+├── CHANGELOG.md
+├── app/
+│   ├── model/
+│   │   └── models.py
+│   ├── controller/
+│   │   ├── service.py
+│   │   ├── routing.py
+│   │   └── api.py
+│   └── ui/
+│       ├── overview.py
+│       ├── settings.py
+│       └── widget.py
+└── tests/
+    └── test_service.py
 ```
 
 ---
@@ -170,5 +180,5 @@ lyndrix-external-services/
 
 ## Requirements
 
-- lyndrix-core ≥ 0.0.1
+- lyndrix-core ≥ 0.0.6
 - No additional Python dependencies — uses only packages already present in lyndrix-core (`nicegui`, `fastapi`, `sqlalchemy`, `pydantic`)

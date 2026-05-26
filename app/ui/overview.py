@@ -4,10 +4,11 @@ ui_overview.py — Hub page at /external showing all registered external service
 """
 from nicegui import ui
 
-from .service import ext_service_manager
+from app.controller.service import ext_service_manager
 
 
 def render_overview_ui(ctx) -> None:
+    del ctx
     services = ext_service_manager.get_all()
 
     if not services:
@@ -40,14 +41,12 @@ def render_overview_ui(ctx) -> None:
 
 
 def _render_service_card(svc, dimmed: bool = False) -> None:
-    """Render a card for one external service."""
     opacity = "opacity-50" if dimmed else ""
 
     with ui.card().classes(
         f"w-64 cursor-pointer hover:scale-[1.02] transition-transform "
         f"bg-zinc-800/50 border border-zinc-700/40 rounded-xl p-0 {opacity}"
     ):
-        # Gradient header bar
         with ui.element("div").classes(
             "h-1 w-full bg-gradient-to-r from-sky-400 to-cyan-400 rounded-t-xl"
         ):
@@ -101,7 +100,6 @@ def _render_service_card(svc, dimmed: bool = False) -> None:
                         on_click=lambda u=f"/external/{svc.slug}": ui.navigate.to(u),
                     ).props("unelevated size=sm color=sky").classes("flex-1")
 
-                # Always show direct link button
                 ui.button(
                     icon="open_in_new",
                     on_click=lambda url=svc.url: ui.run_javascript(

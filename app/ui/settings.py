@@ -4,15 +4,12 @@ ui_settings.py — Settings card for managing external services.
 """
 from nicegui import ui
 
-from core.logger import get_logger
-
-log = get_logger("Plugin:ExternalServices:UI")
-
 
 def render_settings_ui(ctx) -> None:
-    from .service import ext_service_manager
+    del ctx
+    from app.controller.service import ext_service_manager
 
-    _state = {"editing": None}  # id of service currently being edited, or None
+    _state = {"editing": None}
 
     def _reload():
         container.clear()
@@ -20,7 +17,6 @@ def render_settings_ui(ctx) -> None:
             _render_list(container, _state)
 
     with ui.column().classes("w-full gap-4"):
-        # ── Header ────────────────────────────────────────────────────────────
         with ui.row().classes("w-full items-center justify-between"):
             with ui.row().classes("items-center gap-2"):
                 ui.icon("public", size="20px").classes("text-sky-400")
@@ -33,7 +29,6 @@ def render_settings_ui(ctx) -> None:
                 on_click=lambda: _open_form_dialog(None, _reload),
             ).props("unelevated size=sm color=sky")
 
-        # ── Info banner ───────────────────────────────────────────────────────
         with ui.row().classes(
             "w-full items-start gap-3 p-3 "
             "bg-zinc-800/30 border border-zinc-700/30 rounded-xl"
@@ -46,14 +41,13 @@ def render_settings_ui(ctx) -> None:
                 "Neue Services erscheinen sofort in der Navigation ohne Neustart."
             ).classes("text-xs text-zinc-500")
 
-        # ── Service list ──────────────────────────────────────────────────────
         container = ui.column().classes("w-full gap-2")
         with container:
             _render_list(container, _state)
 
 
 def _render_list(container, _state) -> None:
-    from .service import ext_service_manager
+    from app.controller.service import ext_service_manager
 
     services = ext_service_manager.get_all()
 
@@ -72,16 +66,13 @@ def _render_service_row(svc, container, _state) -> None:
         "w-full bg-zinc-800/40 border border-zinc-700/30 rounded-xl p-0"
     ):
         with ui.row().classes("w-full items-center gap-3 p-3"):
-            # Status dot
             dot_color = "bg-emerald-500" if svc.enabled else "bg-zinc-600"
             ui.element("div").classes(
                 f"w-2 h-2 rounded-full {dot_color} shrink-0"
             )
 
-            # Icon
             ui.icon(svc.icon or "open_in_browser", size="20px").classes("text-sky-400 shrink-0")
 
-            # Info
             with ui.column().classes("gap-0 flex-1 min-w-0"):
                 ui.label(svc.name).classes("text-sm font-semibold text-zinc-200 truncate")
                 with ui.row().classes("items-center gap-2"):
@@ -93,7 +84,6 @@ def _render_service_row(svc, container, _state) -> None:
                         "text-[10px] font-mono text-zinc-600 truncate"
                     )
 
-            # Action buttons
             with ui.row().classes("items-center gap-1 shrink-0"):
                 ui.button(
                     icon="open_in_new",
@@ -125,7 +115,6 @@ def _refresh_container(container, _state) -> None:
 
 
 def _open_form_dialog(svc, on_save) -> None:
-    """Open a dialog for create / edit."""
     is_edit = svc is not None
 
     with ui.dialog() as dlg, ui.card().classes(
@@ -166,7 +155,6 @@ def _open_form_dialog(svc, on_save) -> None:
             value=svc.description if is_edit else "",
         ).props("outlined dark").classes("w-full")
 
-        # ── Open mode ─────────────────────────────────────────────────────
         current_mode = (getattr(svc, "open_mode", "iframe") or "iframe") if is_edit else "iframe"
         with ui.column().classes("w-full gap-1 mt-1"):
             ui.label("Anzeigemodus").classes(
@@ -174,14 +162,14 @@ def _open_form_dialog(svc, on_save) -> None:
             )
             open_mode_sel = ui.select(
                 options={
-                    "iframe":   "In Lyndrix einbetten (iframe)",
-                    "new_tab":  "Direkt im neuen Tab öffnen",
+                    "iframe": "In Lyndrix einbetten (iframe)",
+                    "new_tab": "Direkt im neuen Tab öffnen",
                 },
                 value=current_mode,
             ).props("outlined dark").classes("w-full")
             ui.label(
-                "Wähle \u201eNeuer Tab\u201c für Services, die das Einbetten via "
-                "X-Frame-Options oder CSP blockieren (z. B. manche Proxmox / "
+                "Wähle „Neuer Tab“ für Services, die das Einbetten via "
+                "X-Frame-Options oder CSP blockieren (z. B. manche Proxmox / "
                 "pfSense Instanzen)."
             ).classes("text-[10px] text-zinc-600")
 
@@ -196,8 +184,8 @@ def _open_form_dialog(svc, on_save) -> None:
             )
 
         def _save():
-            from .service import ext_service_manager
-            from .routing import register_service, remove_service, _registered_slugs
+            from app.controller.service import ext_service_manager
+            from app.controller.routing import register_service, remove_service, _registered_slugs
 
             n = name_in.value.strip()
             s = slug_in.value.strip()
@@ -206,7 +194,6 @@ def _open_form_dialog(svc, on_save) -> None:
                 ui.notify("Name und URL sind Pflichtfelder.", type="negative")
                 return
 
-            # Derive slug from name if empty
             import re
             if not s:
                 s = re.sub(r"[^a-z0-9-]", "-", n.lower()).strip("-") or "service"
@@ -221,7 +208,6 @@ def _open_form_dialog(svc, on_save) -> None:
                 show_in_nav=show_nav.value,
                 enabled=enabled_cb.value,
             )
-            # Refresh routing / nav
             if s in _registered_slugs:
                 remove_service(s)
             if saved_svc.enabled:
@@ -260,8 +246,8 @@ def _confirm_delete(svc, container, _state) -> None:
             )
 
             def _do_delete(s=svc):
-                from .service import ext_service_manager
-                from .routing import remove_service
+                from app.controller.service import ext_service_manager
+                from app.controller.routing import remove_service
                 ext_service_manager.delete(s.id)
                 remove_service(s.slug)
                 ui.notify(f"Service '{s.name}' gelöscht.", type="positive")

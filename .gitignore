@@ -1,5 +1,12 @@
+vendor/
 __pycache__/
 *.pyc
 *.pyo
-*.pyd
-*.log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.venv/
+.idea/
+.vscode/

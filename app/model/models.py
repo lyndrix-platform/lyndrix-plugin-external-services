@@ -3,7 +3,7 @@ models.py — SQLAlchemy persistence model for external service registrations.
 """
 from sqlalchemy import Column, Integer, String, Boolean
 
-from core.components.database.logic.db_service import Base
+from core.api import Base
 
 
 class ExternalService(Base):

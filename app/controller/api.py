@@ -7,16 +7,6 @@ Endpoints:
   PUT    /api/external-services/{id}     — update fields
   DELETE /api/external-services/{id}     — remove
   POST   /api/external-services/reload   — re-scan DB and refresh nav/routes
-
-Callers (e.g. lyndrix-iac-orchestrator) POST a payload like:
-  {
-    "service": "homeassistant",
-    "name":    "Home-Assistant",
-    "icon":    "home",
-    "url":     "https://smart-home.int.example.com",
-    "type":    "iframe",
-    "route":   "smart-home"
-  }
 """
 import re
 from typing import Optional
@@ -52,15 +42,12 @@ def _to_dict(svc) -> dict:
 
 class ServiceCreate(BaseModel):
     """Matches the payload format the IAC orchestrator (and others) send."""
-    service: str                     # used as slug fallback
+    service: str
     name: str
     icon: str = "open_in_browser"
     url: str
     type: str = "iframe"
-    route: Optional[str] = None      # explicit slug override
-    # How to open the service:
-    #   "iframe"   — embedded inside Lyndrix (default)
-    #   "new_tab"  — opens in a new browser tab (for services that block embedding)
+    route: Optional[str] = None
     open_mode: str = "iframe"
     show_in_nav: bool = True
     description: str = ""
@@ -103,7 +90,6 @@ def build_router() -> APIRouter:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        # Register route + sidebar entry immediately without restart
         _refresh_service(svc)
         return _to_dict(svc)
 
@@ -131,7 +117,6 @@ def build_router() -> APIRouter:
 
     @router.post("/reload")
     def reload_services():
-        """Re-scan DB and register any services that are not yet wired up."""
         services = ext_service_manager.get_enabled()
         from .routing import register_all
         register_all(services)
@@ -141,16 +126,14 @@ def build_router() -> APIRouter:
 
 
 def _refresh_service(svc) -> None:
-    """Register (or re-register) route + nav for a service after create/update."""
     try:
         from .routing import register_service, remove_service, _registered_slugs
-        # If slug already registered, remove first so it can be re-evaluated
         if svc.slug in _registered_slugs:
             remove_service(svc.slug)
         if svc.enabled:
             register_service(svc)
     except Exception:
-        pass  # non-critical — takes effect on next startup
+        pass
 
 
 def _remove_service(slug: str) -> None:
