@@ -7,15 +7,11 @@ Each service gets:
   • A virtual manifest entry in module_manager.registry so the service
     shows up in the main sidebar under "Services"
 """
-from core.logger import get_logger
+import logging
 
-log = get_logger("Plugin:ExternalServices:Routing")
+log = logging.getLogger("Plugin:ExternalServices:Routing")
 
-# Tracks slugs that have already had a route + nav entry registered
-# so we never double-register even if the function is called twice.
 _registered_slugs: set = set()
-
-# Shared ModuleContext for all virtual manifests (set by entrypoint)
 _ctx = None
 
 
@@ -47,7 +43,7 @@ def remove_service(slug: str) -> None:
     """Remove a service's sidebar nav entry (route stays until restart)."""
     virtual_id = f"external.service.{slug}"
     try:
-        from core.components.plugins.logic.manager import module_manager
+        from core.api import module_manager
         if virtual_id in module_manager.registry:
             del module_manager.registry[virtual_id]
             log.info(f"NAV: Removed sidebar entry for '{slug}'.")
@@ -55,8 +51,6 @@ def remove_service(slug: str) -> None:
         log.warning(f"NAV: Could not remove entry for '{slug}': {exc}")
     _registered_slugs.discard(slug)
 
-
-# ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _register_nicegui_page(slug: str, name: str, icon: str, url: str, open_mode: str) -> None:
     """Register a NiceGUI page at /external/<slug> using the standard main_layout."""
@@ -95,10 +89,6 @@ def _render_iframe(name: str, icon: str, url: str) -> None:
         'display: block;'
     )
 
-    # Strip all padding/margin/max-width from every container between
-    # .q-page and the iframe so it fills edge-to-edge top-to-bottom.
-    # .q-page-container already accounts for the 48px header via padding-top,
-    # so inside .q-page we just need flex:1 on every wrapper.
     ui.run_javascript('''
         (function() {
             var qpage = document.querySelector(".q-page");
@@ -134,14 +124,8 @@ def _render_iframe(name: str, icon: str, url: str) -> None:
 
 
 def _render_new_tab_landing(name: str, icon: str, url: str) -> None:
-    """
-    Landing page for services configured with open_mode='new_tab'.
-    Opens the URL in a new browser tab immediately via JS, and shows a
-    small card as confirmation so the page isn't blank.
-    """
     from nicegui import ui
 
-    # Auto-open on page load
     ui.run_javascript(f"window.open('{url}', '_blank');")
 
     with ui.column().classes("w-full items-center justify-center gap-6 py-24"):
@@ -164,8 +148,7 @@ def _render_new_tab_landing(name: str, icon: str, url: str) -> None:
 def _inject_nav_entry(svc) -> None:
     """Add a virtual manifest entry to the module_manager so the sidebar shows this service."""
     try:
-        from core.components.plugins.logic.manager import module_manager
-        from core.components.plugins.logic.models import ModuleManifest, ModulePermissions
+        from core.api import ModuleManifest, ModulePermissions, module_manager
 
         virtual_id = f"external.service.{svc.slug}"
         if virtual_id in module_manager.registry:

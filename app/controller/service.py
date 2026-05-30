@@ -1,15 +1,15 @@
 """
 service.py — CRUD manager for ExternalService records.
 """
+import logging
 import re
 from typing import List, Optional
 
-from core.components.database.logic.db_service import db_instance
-from core.logger import get_logger
+from core.api import Base, db_instance
 
-from .models import ExternalService
+from app.model.models import ExternalService
 
-log = get_logger("Plugin:ExternalServices")
+log = logging.getLogger("Plugin:ExternalServices")
 
 
 def _slugify(text: str) -> str:
@@ -24,7 +24,6 @@ class ExternalServiceManager:
 
     def ensure_table(self) -> None:
         """Idempotently create the external_services table and apply any column migrations."""
-        from core.components.database.logic.db_service import Base
         Base.metadata.create_all(bind=db_instance.engine)
         self._migrate_schema()
 
@@ -48,8 +47,6 @@ class ExternalServiceManager:
                         pass  # already present
                     else:
                         log.warning(f"MIGRATE: Could not add `{table}.{column}`: {e}")
-
-    # ── Reads ─────────────────────────────────────────────────────────────────
 
     def get_all(self) -> List[ExternalService]:
         with db_instance.SessionLocal() as s:
@@ -81,8 +78,6 @@ class ExternalServiceManager:
             if row:
                 s.expunge(row)
             return row
-
-    # ── Writes ────────────────────────────────────────────────────────────────
 
     def upsert(
         self,
@@ -132,6 +127,26 @@ class ExternalServiceManager:
                 s.expunge(svc)
                 log.info(f"UPSERT: Created external service '{slug}'.")
                 return svc
+
+    def register_from_payload(self, payload) -> Optional[ExternalService]:
+        if not isinstance(payload, dict):
+            log.warning("external_services:register received non-dict payload, ignoring.")
+            return None
+
+        raw_slug = payload.get("route") or payload.get("service", "service")
+        slug = _slugify(str(raw_slug))
+
+        return self.upsert(
+            slug=slug,
+            name=payload.get("name", slug),
+            url=payload.get("url", ""),
+            icon=payload.get("icon", "open_in_browser"),
+            service_type=payload.get("type", "iframe"),
+            open_mode=payload.get("open_mode", "iframe"),
+            show_in_nav=bool(payload.get("show_in_nav", True)),
+            description=payload.get("description", ""),
+            enabled=bool(payload.get("enabled", True)),
+        )
 
     def update(self, service_id: int, **kwargs) -> bool:
         with db_instance.SessionLocal() as s:
