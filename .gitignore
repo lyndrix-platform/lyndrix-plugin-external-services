@@ -72,3 +72,6 @@ vendor/*
 vendor
 /vendor/
 >>>>>>> 5ba98ee (added gitignore)
+
+# Generated docs build output
+.cache/
