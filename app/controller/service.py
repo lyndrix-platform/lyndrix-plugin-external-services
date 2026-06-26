@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from core.api import Base, db_instance
 
-from app.model.models import ExternalService
+from ..model.models import ExternalService
 
 log = logging.getLogger("Plugin:ExternalServices")
 

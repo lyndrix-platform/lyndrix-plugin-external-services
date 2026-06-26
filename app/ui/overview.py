@@ -4,7 +4,7 @@ ui_overview.py — Hub page at /external showing all registered external service
 """
 from nicegui import ui
 
-from app.controller.service import ext_service_manager
+from ..controller.service import ext_service_manager
 
 
 def render_overview_ui(ctx) -> None:

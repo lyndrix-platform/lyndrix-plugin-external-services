@@ -3,12 +3,12 @@ import asyncio
 from core.api import ModuleManifest
 from nicegui import ui
 
-from app.controller.api import build_router
-from app.controller.routing import register_all, register_service, set_context
-from app.controller.service import ext_service_manager
-from app.ui.overview import render_overview_ui as _render_overview_ui
-from app.ui.settings import render_settings_ui as _render_settings_ui
-from app.ui.widget import render_dashboard_widget as _render_dashboard_widget
+from .app.controller.api import build_router
+from .app.controller.routing import register_all, register_service, set_context
+from .app.controller.service import ext_service_manager
+from .app.ui.overview import render_overview_ui as _render_overview_ui
+from .app.ui.settings import render_settings_ui as _render_settings_ui
+from .app.ui.widget import render_dashboard_widget as _render_dashboard_widget
 
 try:
     from ui.layout import main_layout
@@ -22,7 +22,7 @@ except ImportError:
 manifest = ModuleManifest(
     id="lyndrix.plugin.external_services",
     name="External Services",
-    version="0.1.1",
+    version="0.1.2",
     description="Embed external web services (Home Assistant, Grafana, …) via iframe.",
     author="Lyndrix",
     icon="public",

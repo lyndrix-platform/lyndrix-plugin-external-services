@@ -7,7 +7,7 @@ from nicegui import ui
 
 def render_settings_ui(ctx) -> None:
     del ctx
-    from app.controller.service import ext_service_manager
+    from ..controller.service import ext_service_manager
 
     _state = {"editing": None}
 
@@ -47,7 +47,7 @@ def render_settings_ui(ctx) -> None:
 
 
 def _render_list(container, _state) -> None:
-    from app.controller.service import ext_service_manager
+    from ..controller.service import ext_service_manager
 
     services = ext_service_manager.get_all()
 
@@ -184,8 +184,8 @@ def _open_form_dialog(svc, on_save) -> None:
             )
 
         def _save():
-            from app.controller.service import ext_service_manager
-            from app.controller.routing import register_service, remove_service, _registered_slugs
+            from ..controller.service import ext_service_manager
+            from ..controller.routing import register_service, remove_service, _registered_slugs
 
             n = name_in.value.strip()
             s = slug_in.value.strip()
@@ -246,8 +246,8 @@ def _confirm_delete(svc, container, _state) -> None:
             )
 
             def _do_delete(s=svc):
-                from app.controller.service import ext_service_manager
-                from app.controller.routing import remove_service
+                from ..controller.service import ext_service_manager
+                from ..controller.routing import remove_service
                 ext_service_manager.delete(s.id)
                 remove_service(s.slug)
                 ui.notify(f"Service '{s.name}' gelöscht.", type="positive")
