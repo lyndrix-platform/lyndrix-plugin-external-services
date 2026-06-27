@@ -8,7 +8,7 @@ A Lyndrix plugin that embeds external web services (Home Assistant, Grafana, Net
 
 - **Automatic routing** — every service gets a dedicated page at `/external/<slug>`, registered at runtime without a restart
 - **Sidebar integration** — each service appears in the Lyndrix sidebar under *Services*, indistinguishable from native plugins
-- **REST API** — full CRUD at `/api/external-services/` so other services (e.g. lyndrix-iac-orchestrator) can register services programmatically
+- **REST API** — authenticated full CRUD at `/api/plugins/lyndrix.plugin.external_services/` so other services (e.g. lyndrix-iac-orchestrator) can register services programmatically (an API key / `api:read`+`api:write` permission is required)
 - **Event bus** — publish `external_services:register` from any plugin to register a service in-process
 - **Settings UI** — manage services through the plugin settings modal (add / edit / delete with live preview)
 - **Hub page** — `/external` lists all registered services as cards with open and new-tab buttons
@@ -36,13 +36,20 @@ Both the REST API and the event bus accept the same fields:
 
 ## REST API
 
-Base path: `/api/external-services/`
+Base path: `/api/plugins/lyndrix.plugin.external_services/`
+
+> **Authentication required.** The router is mounted by core via
+> `ctx.register_routes()` and every route is auth-enforced. Reads need the
+> `api:read` permission, mutations need `api:write`. Send a valid Lyndrix API key
+> (e.g. `X-API-Key` / `Authorization`) with each request — the old anonymous
+> `/api/external-services/` path no longer exists.
 
 ### Register or update a service
 
 ```http
-POST /api/external-services/
+POST /api/plugins/lyndrix.plugin.external_services/
 Content-Type: application/json
+X-API-Key: <your-api-key>
 
 {
   "service":     "homeassistant",
@@ -60,13 +67,13 @@ The call is **idempotent** — if a service with the same slug already exists it
 ### List all services
 
 ```http
-GET /api/external-services/
+GET /api/plugins/lyndrix.plugin.external_services/
 ```
 
 ### Update a service
 
 ```http
-PUT /api/external-services/{id}
+PUT /api/plugins/lyndrix.plugin.external_services/{id}
 Content-Type: application/json
 
 {
@@ -77,13 +84,13 @@ Content-Type: application/json
 ### Delete a service
 
 ```http
-DELETE /api/external-services/{id}
+DELETE /api/plugins/lyndrix.plugin.external_services/{id}
 ```
 
 ### Force re-scan (after manual DB changes)
 
 ```http
-POST /api/external-services/reload
+POST /api/plugins/lyndrix.plugin.external_services/reload
 ```
 
 ---
@@ -129,14 +136,18 @@ In `lyndrix-iac-orchestrator`, after a deployment completes, post the service UR
 ```python
 import httpx
 
-httpx.post("http://lyndrix-core:8081/api/external-services/", json={
-    "service":     "homeassistant",
-    "name":        "Home-Assistant",
-    "icon":        "home",
-    "url":         deployment.url,
-    "type":        "iframe",
-    "route":       "smart-home",
-})
+httpx.post(
+    "http://lyndrix-core:8081/api/plugins/lyndrix.plugin.external_services/",
+    headers={"X-API-Key": API_KEY},
+    json={
+        "service":     "homeassistant",
+        "name":        "Home-Assistant",
+        "icon":        "home",
+        "url":         deployment.url,
+        "type":        "iframe",
+        "route":       "smart-home",
+    },
+)
 ```
 
 Or use the event bus directly if both run in the same process.
@@ -152,16 +163,18 @@ lyndrix-plugin-external-services/
 ├── requirements-dev.txt
 ├── CHANGELOG.md
 ├── app/
+│   ├── api.py
 │   ├── model/
 │   │   └── models.py
-│   ├── controller/
+│   ├── logic/
 │   │   ├── service.py
-│   │   ├── routing.py
-│   │   └── api.py
+│   │   └── routing.py
 │   └── ui/
-│       ├── overview.py
-│       ├── settings.py
-│       └── widget.py
+│       └── nicegui/
+│           ├── overview.py
+│           ├── settings.py
+│           ├── pages.py
+│           └── widget.py
 └── tests/
     └── test_service.py
 ```
@@ -174,7 +187,7 @@ lyndrix-plugin-external-services/
 |---|---|
 | `/external` | Hub page — overview of all registered services |
 | `/external/<slug>` | Full-screen iframe for the service |
-| `/api/external-services/` | REST CRUD |
+| `/api/plugins/lyndrix.plugin.external_services/` | REST CRUD (authenticated) |
 
 ---
 

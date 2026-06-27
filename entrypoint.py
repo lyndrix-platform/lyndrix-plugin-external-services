@@ -1,28 +1,19 @@
 import asyncio
 
-from core.api import ModuleManifest
-from nicegui import ui
+from core.api import ModuleContext, ModuleManifest
 
-from .app.controller.api import build_router
-from .app.controller.routing import register_all, register_service, set_context
-from .app.controller.service import ext_service_manager
-from .app.ui.overview import render_overview_ui as _render_overview_ui
-from .app.ui.settings import render_settings_ui as _render_settings_ui
-from .app.ui.widget import render_dashboard_widget as _render_dashboard_widget
-
-try:
-    from ui.layout import main_layout
-except ImportError:
-    def main_layout(title):  # type: ignore
-        def decorator(fn):
-            return fn
-        return decorator
-
+from .app.api import build_router
+from .app.logic.routing import register_all, register_service, set_context
+from .app.logic.service import ext_service_manager
+from .app.ui.nicegui.overview import render_overview_ui as _render_overview_ui
+from .app.ui.nicegui.pages import register_pages
+from .app.ui.nicegui.settings import render_settings_ui as _render_settings_ui
+from .app.ui.nicegui.widget import render_dashboard_widget as _render_dashboard_widget
 
 manifest = ModuleManifest(
     id="lyndrix.plugin.external_services",
     name="External Services",
-    version="0.1.2",
+    version="0.2.0",
     description="Embed external web services (Home Assistant, Grafana, …) via iframe.",
     author="Lyndrix",
     icon="public",
@@ -40,49 +31,55 @@ manifest = ModuleManifest(
 plugin_state: dict = {"ready": False}
 
 
-def render_overview_ui(ctx):
+def render_overview_ui(ctx: ModuleContext) -> None:
     _render_overview_ui(ctx)
 
 
-def render_settings_ui(ctx):
+def render_settings_ui(ctx: ModuleContext) -> None:
     _render_settings_ui(ctx)
 
 
-def render_dashboard_widget(ctx):
+def render_dashboard_widget(ctx: ModuleContext) -> None:
     _render_dashboard_widget(ctx)
 
 
-def setup(ctx):
+def setup(ctx: ModuleContext) -> None:
     ctx.log.info("External Services: starting setup...")
 
-    ext_service_manager.ensure_table()
     set_context(ctx)
 
-    services = ext_service_manager.get_enabled()
-    register_all(services)
-    ctx.log.info(f"External Services: registered {len(services)} service(s).")
+    # Mount the REST router through the core registry so it inherits
+    # require_api_auth (and the per-route api:read/api:write guards). This
+    # replaces the previous ``from main import app`` escape hatch.
+    ctx.register_routes(build_router())
 
-    from main import app as fastapi_app  # noqa: PLC0415
-    fastapi_app.include_router(build_router())
-
-    @ui.page("/external")
-    @main_layout("External Services")
-    async def _external_hub():
-        render_overview_ui(ctx)
+    # Register the single slug-resolved page and the overview hub. These do not
+    # touch the DB at registration time, so they are safe to register here.
+    register_pages()
+    _register_overview_page(ctx)
 
     @ctx.subscribe("db:connected")
-    async def on_db_connected(payload):
+    async def on_db_connected(payload) -> None:
         del payload
+        # All DB work (table create + migration + read) is guarded behind
+        # db:connected and offloaded so it never blocks the event loop.
+        await asyncio.to_thread(ext_service_manager.ensure_table)
         svcs = await asyncio.to_thread(ext_service_manager.get_enabled)
         register_all(svcs)
-        ctx.log.info("External Services: re-registered routes after db:connected.")
+        ctx.log.info(
+            f"External Services: registered {len(svcs)} service(s) after db:connected."
+        )
 
     @ctx.subscribe("external_services:register")
-    async def on_register(payload):
+    async def on_register(payload) -> None:
         try:
-            svc = await asyncio.to_thread(ext_service_manager.register_from_payload, payload)
+            svc = await asyncio.to_thread(
+                ext_service_manager.register_from_payload, payload
+            )
         except Exception as exc:
-            ctx.log.error(f"External Services: failed to register service from event: {exc}")
+            ctx.log.error(
+                f"External Services: failed to register service from event: {exc}"
+            )
             return
 
         if svc is None:
@@ -95,6 +92,25 @@ def setup(ctx):
     ctx.log.info("External Services: setup complete.")
 
 
-def teardown(ctx):
+def _register_overview_page(ctx: ModuleContext) -> None:
+    from nicegui import ui
+
+    try:
+        from ui.layout import main_layout
+    except ImportError:
+
+        def main_layout(title, **kwargs):  # type: ignore
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+    @ui.page("/external")
+    @main_layout("External Services")
+    async def _external_hub() -> None:
+        render_overview_ui(ctx)
+
+
+def teardown(ctx: ModuleContext) -> None:
     plugin_state["ready"] = False
     ctx.log.info("External Services: teardown complete.")

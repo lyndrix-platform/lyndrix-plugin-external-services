@@ -1,6 +1,6 @@
 from nicegui import ui
 
-from ..controller.service import ext_service_manager
+from ...logic.service import ext_service_manager
 
 
 def render_dashboard_widget(ctx):

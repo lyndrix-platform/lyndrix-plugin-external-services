@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-06-27
+### Security
+- **Critical**: closed the anonymous REST API. The router is now mounted by core
+  via `ctx.register_routes()` under `/api/plugins/lyndrix.plugin.external_services/`
+  and every route is auth-enforced (`api:read` for reads, `api:write` for
+  mutations). The old unauthenticated `/api/external-services/` path is gone.
+- **Critical**: fixed stored XSS — service URLs are now validated and embedded via
+  a sandboxed iframe, with values rendered through `json.dumps`.
+
+### Changed
+- Updated operator-facing help text (REST docs, overview/settings UI) to point at
+  the new authenticated path and note that an API key is required (B3). The
+  in-process `external_services:register` event remains supported.
+- Refactored package layout: `app/controller/` → `app/logic/`, `app/ui/*` →
+  `app/ui/nicegui/*`, REST router moved to `app/api.py`.
+
 ## [0.1.0] - 2026-05-26
 ### Changed
 - Refactored to the new Lyndrix Core plugin standard (`./app/` sub-package layout).

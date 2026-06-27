@@ -2,9 +2,11 @@
 ui_overview.py — Hub page at /external showing all registered external services
                  as clickable cards.  This is the "External Services" sidebar entry.
 """
+
 from nicegui import ui
 
-from ..controller.service import ext_service_manager
+from ...logic.service import ext_service_manager
+from .pages import open_in_new_tab
 
 
 def render_overview_ui(ctx) -> None:
@@ -19,7 +21,8 @@ def render_overview_ui(ctx) -> None:
             )
             ui.label(
                 "Füge Services über die Einstellungen → Plugins → External Services hinzu "
-                "oder sende einen POST an /api/external-services/."
+                "oder sende einen authentifizierten POST (API-Key erforderlich) an "
+                "/api/plugins/lyndrix.plugin.external_services/."
             ).classes("text-zinc-600 text-xs text-center max-w-md")
         return
 
@@ -57,7 +60,9 @@ def _render_service_card(svc, dimmed: bool = False) -> None:
                 with ui.element("div").classes(
                     "w-10 h-10 rounded-lg bg-zinc-700/50 flex items-center justify-center shrink-0"
                 ):
-                    ui.icon(svc.icon or "open_in_browser", size="22px").classes("text-sky-400")
+                    ui.icon(svc.icon or "open_in_browser", size="22px").classes(
+                        "text-sky-400"
+                    )
 
                 with ui.column().classes("gap-0 min-w-0"):
                     ui.label(svc.name).classes(
@@ -89,9 +94,7 @@ def _render_service_card(svc, dimmed: bool = False) -> None:
                     ui.button(
                         "Öffnen",
                         icon="open_in_new",
-                        on_click=lambda u=svc.url: ui.run_javascript(
-                            f"window.open('{u}', '_blank')"
-                        ),
+                        on_click=lambda u=svc.url: open_in_new_tab(u),
                     ).props("unelevated size=sm color=amber").classes("flex-1")
                 else:
                     ui.button(
@@ -102,9 +105,7 @@ def _render_service_card(svc, dimmed: bool = False) -> None:
 
                 ui.button(
                     icon="open_in_new",
-                    on_click=lambda url=svc.url: ui.run_javascript(
-                        f"window.open('{url}', '_blank')"
-                    ),
+                    on_click=lambda url=svc.url: open_in_new_tab(url),
                 ).props("flat round dense").classes("text-zinc-500").tooltip(
                     "Im Browser öffnen"
                 )

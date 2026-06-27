@@ -45,7 +45,7 @@ class ServiceSmokeTest(unittest.TestCase):
     def test_manager_exists_and_empty_payload_does_not_raise(self):
         _install_core_api_stub()
 
-        service_module = importlib.import_module("app.controller.service")
+        service_module = importlib.import_module("app.logic.service")
 
         self.assertTrue(hasattr(service_module, "ext_service_manager"))
         service_module.ext_service_manager.register_from_payload({})
