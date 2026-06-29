@@ -1,6 +1,7 @@
 import asyncio
+import time
 
-from core.api import ModuleContext, ModuleManifest
+from core.api import ModuleContext, ModuleManifest, PluginHealthStatus, db_instance
 
 from .app.api import build_router
 from .app.logic.routing import register_all, register_service, set_context
@@ -13,7 +14,7 @@ from .app.ui.nicegui.widget import render_dashboard_widget as _render_dashboard_
 manifest = ModuleManifest(
     id="lyndrix.plugin.external_services",
     name="External Services",
-    version="0.2.0",
+    version="0.2.1",
     description="Embed external web services (Home Assistant, Grafana, …) via iframe.",
     author="Lyndrix",
     icon="public",
@@ -109,6 +110,61 @@ def _register_overview_page(ctx: ModuleContext) -> None:
     @main_layout("External Services")
     async def _external_hub() -> None:
         render_overview_ui(ctx)
+
+
+async def health(ctx: ModuleContext) -> PluginHealthStatus:
+    """Functional health probe.
+
+    Goes beyond "setup ran" by actually exercising the persistence path this
+    plugin depends on: it confirms the DB is connected, that the
+    ``external_services`` table is reachable, and reports how many services are
+    registered/enabled. The sync ORM calls are offloaded to a thread so the
+    health check never blocks the event loop.
+    """
+    start = time.perf_counter()
+
+    if not plugin_state.get("ready"):
+        return PluginHealthStatus(
+            status="error",
+            details={"reason": "setup_incomplete", "ready": False},
+        )
+
+    if not db_instance.is_connected:
+        return PluginHealthStatus(
+            status="error",
+            details={"reason": "db_unavailable", "db_connected": False},
+        )
+
+    try:
+        def _probe() -> tuple[int, int]:
+            ext_service_manager.ensure_table()
+            return (
+                len(ext_service_manager.get_all()),
+                len(ext_service_manager.get_enabled()),
+            )
+
+        total, enabled = await asyncio.to_thread(_probe)
+    except Exception as exc:  # DB query failed → the plugin cannot serve anything
+        return PluginHealthStatus(
+            status="error",
+            details={"reason": "db_query_failed", "error": str(exc)},
+            latency_ms=round((time.perf_counter() - start) * 1000, 1),
+        )
+
+    latency = round((time.perf_counter() - start) * 1000, 1)
+    details = {
+        "db_connected": True,
+        "services_total": total,
+        "services_enabled": enabled,
+    }
+    # DB works but nothing is wired up yet — usable, but not doing its job.
+    if enabled == 0:
+        return PluginHealthStatus(
+            status="degraded",
+            details={**details, "reason": "no_enabled_services"},
+            latency_ms=latency,
+        )
+    return PluginHealthStatus(status="ok", details=details, latency_ms=latency)
 
 
 def teardown(ctx: ModuleContext) -> None:
