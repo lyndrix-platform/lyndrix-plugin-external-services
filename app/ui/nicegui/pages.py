@@ -17,6 +17,8 @@ import logging
 
 from nicegui import ui
 
+from core.api import UIStyles
+
 from ...logic.service import ext_service_manager
 
 log = logging.getLogger("Plugin:ExternalServices:Pages")
@@ -60,9 +62,14 @@ def register_pages() -> None:
 
 def _render_unavailable(slug: str) -> None:
     with ui.column().classes("w-full items-center justify-center gap-4 py-24"):
-        ui.icon("link_off", size="48px").classes("text-zinc-600")
-        ui.label("Dieser Service ist nicht verfügbar.").classes("text-zinc-400 text-sm")
-        ui.label(f"/external/{slug}").classes("text-[11px] font-mono text-zinc-600")
+        ui.icon("link_off", size="48px").classes("text-[var(--lx-text-muted)]")
+        ui.label("Dieser Service ist nicht verfügbar.").classes(
+            "text-[var(--lx-text-muted)] text-sm"
+        )
+        ui.label(f"/external/{slug}").classes(
+            "text-[length:var(--lx-text-2xs)] [font-family:var(--lx-font-mono)] "
+            "text-[var(--lx-text-muted)]"
+        )
 
 
 def render_iframe(name: str, icon: str, url: str) -> None:
@@ -71,6 +78,9 @@ def render_iframe(name: str, icon: str, url: str) -> None:
     # can never break out of the double-quoted ``src`` attribute.
     safe_src = url.replace('"', "%22")
 
+    # Intentionally chromeless (no .lx-iframe-frame border/radius): this is a
+    # full-page embed and the JS below strips all surrounding padding/margin
+    # so the embedded service fills the viewport edge-to-edge.
     ui.element("iframe").props(
         f'src="{safe_src}" sandbox="{_IFRAME_SANDBOX}" '
         'referrerpolicy="no-referrer" allowfullscreen'
@@ -120,20 +130,23 @@ def render_new_tab_landing(name: str, icon: str, url: str) -> None:
     open_in_new_tab(url)
 
     with ui.column().classes("w-full items-center justify-center gap-6 py-24"):
-        with ui.card().classes(
-            "items-center gap-4 p-8 bg-zinc-800/40 border border-zinc-700/30 rounded-2xl"
-        ):
-            ui.icon(icon or "open_in_browser", size="48px").classes("text-sky-400")
-            ui.label(name).classes("text-xl font-bold text-zinc-100")
-            ui.label("Dieser Service wird in einem neuen Tab geöffnet.").classes(
-                "text-sm text-zinc-400 text-center"
+        with ui.card().classes(f"items-center gap-4 {UIStyles.ENTITY_CARD}"):
+            ui.icon(icon or "open_in_browser", size="48px").classes(
+                "text-[var(--lx-accent-2)]"
             )
-            ui.label(url).classes("text-[11px] font-mono text-zinc-600")
+            ui.label(name).classes("text-xl font-bold text-[var(--lx-text)]")
+            ui.label("Dieser Service wird in einem neuen Tab geöffnet.").classes(
+                "text-sm text-[var(--lx-text-muted)] text-center"
+            )
+            ui.label(url).classes(
+                "text-[length:var(--lx-text-2xs)] [font-family:var(--lx-font-mono)] "
+                "text-[var(--lx-text-muted)]"
+            )
             ui.button(
                 "Erneut öffnen",
                 icon="open_in_new",
                 on_click=lambda u=url: open_in_new_tab(u),
-            ).props("unelevated color=sky").classes("mt-2")
+            ).props("unelevated color=secondary").classes("mt-2")
 
 
 def open_in_new_tab(url: str) -> None:
