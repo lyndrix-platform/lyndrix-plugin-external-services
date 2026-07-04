@@ -14,7 +14,7 @@ from .app.ui.nicegui.widget import render_dashboard_widget as _render_dashboard_
 manifest = ModuleManifest(
     id="lyndrix.plugin.external_services",
     name="External Services",
-    version="0.2.1",
+    version="0.3.0",
     description="Embed external web services (Home Assistant, Grafana, …) via iframe.",
     author="Lyndrix",
     icon="public",
