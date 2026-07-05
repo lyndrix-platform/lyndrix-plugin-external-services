@@ -1,11 +1,13 @@
+import asyncio
+
 from nicegui import ui
 
 from ...logic.service import ext_service_manager
 
 
-def render_dashboard_widget(ctx):
+async def render_dashboard_widget(ctx):
     del ctx
-    services = ext_service_manager.get_enabled()
+    services = await asyncio.to_thread(ext_service_manager.get_enabled)
     with ui.row().classes("items-center gap-2"):
         ui.icon("public", size="16px").classes("text-[var(--lx-accent-2)]")
         ui.label(f"{len(services)} externe Service(s) aktiv").classes(

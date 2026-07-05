@@ -40,6 +40,10 @@ def validate_url(url: str) -> str:
         raise ValueError(
             f"Invalid service URL (must be http(s):// with a host): {candidate!r}"
         )
+    if parsed.username or parsed.password:
+        raise ValueError(
+            f"Invalid service URL (must not embed userinfo credentials): {candidate!r}"
+        )
     return candidate
 
 

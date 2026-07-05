@@ -3,6 +3,8 @@ ui_overview.py — Hub page at /external showing all registered external service
                  as clickable cards.  This is the "External Services" sidebar entry.
 """
 
+import asyncio
+
 from nicegui import ui
 
 from core.api import UIStyles
@@ -11,9 +13,9 @@ from ...logic.service import ext_service_manager
 from .pages import open_in_new_tab
 
 
-def render_overview_ui(ctx) -> None:
+async def render_overview_ui(ctx) -> None:
     del ctx
-    services = ext_service_manager.get_all()
+    services = await asyncio.to_thread(ext_service_manager.get_all)
 
     if not services:
         with ui.column().classes("w-full items-center justify-center gap-4 py-16"):

@@ -34,6 +34,14 @@ from .logic import routing
 from .logic.service import ext_service_manager, validate_url
 from .model.models import ExternalService
 
+# Plugin-scoped permission ids. Gating routes on the fully-qualified
+# plugin:<id>:api:* (rather than bare api:read/api:write) makes the manifest's
+# scoped viewer/operator roles actually unlock routes, while global api:read/
+# api:write holders keep working via the core's one-directional fallback.
+PLUGIN_ID = "lyndrix.plugin.external_services"
+PERM_READ = f"plugin:{PLUGIN_ID}:api:read"
+PERM_WRITE = f"plugin:{PLUGIN_ID}:api:write"
+
 log = logging.getLogger("Plugin:ExternalServices:API")
 
 
@@ -99,14 +107,14 @@ class ServiceUpdate(BaseModel):
 def build_router() -> APIRouter:
     router = APIRouter(tags=["External Services"])
 
-    @router.get("/", dependencies=[Depends(require_permission("api:read"))])
+    @router.get("/", dependencies=[Depends(require_permission(PERM_READ))])
     def list_services():
         return [_to_dict(s) for s in ext_service_manager.get_all()]
 
     @router.post(
         "/",
         status_code=201,
-        dependencies=[Depends(require_permission("api:write"))],
+        dependencies=[Depends(require_permission(PERM_WRITE))],
     )
     def create_service(data: ServiceCreate):
         slug = _slugify(data.route or data.service)
@@ -130,7 +138,7 @@ def build_router() -> APIRouter:
 
     @router.put(
         "/{service_id}",
-        dependencies=[Depends(require_permission("api:write"))],
+        dependencies=[Depends(require_permission(PERM_WRITE))],
     )
     def update_service(service_id: int, data: ServiceUpdate):
         updates = {k: v for k, v in data.dict().items() if v is not None}
@@ -148,7 +156,7 @@ def build_router() -> APIRouter:
 
     @router.delete(
         "/{service_id}",
-        dependencies=[Depends(require_permission("api:write"))],
+        dependencies=[Depends(require_permission(PERM_WRITE))],
     )
     def delete_service(service_id: int):
         svc = ext_service_manager.get_by_id(service_id)
@@ -162,7 +170,7 @@ def build_router() -> APIRouter:
 
     @router.post(
         "/reload",
-        dependencies=[Depends(require_permission("api:write"))],
+        dependencies=[Depends(require_permission(PERM_WRITE))],
     )
     def reload_services():
         services = ext_service_manager.get_enabled()

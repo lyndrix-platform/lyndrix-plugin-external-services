@@ -3,6 +3,7 @@ ui_settings.py — Settings card for managing external services.
                  Rendered inside the plugin settings modal from the header bar.
 """
 
+import asyncio
 import re
 
 from nicegui import ui
@@ -57,6 +58,10 @@ def render_settings_ui(ctx) -> None:
 
 
 def _render_list(container, _state) -> None:
+    # NOTE(agent): stays synchronous — core's plugins_ui.py / layout.py call
+    # render_settings_ui(ctx) without await (no iscoroutinefunction check,
+    # unlike render_dashboard_widget), so this render path has no async
+    # boundary to offload onto asyncio.to_thread through.
     services = ext_service_manager.get_all()
 
     if not services:
@@ -231,7 +236,7 @@ def _open_form_dialog(svc, on_save) -> None:
                 value=svc.enabled if is_edit else True,
             )
 
-        def _save():
+        async def _save():
             n = name_in.value.strip()
             s = slug_in.value.strip()
             u = url_in.value.strip()
@@ -243,7 +248,8 @@ def _open_form_dialog(svc, on_save) -> None:
                 s = re.sub(r"[^a-z0-9-]", "-", n.lower()).strip("-") or "service"
 
             try:
-                saved_svc = ext_service_manager.upsert(
+                saved_svc = await asyncio.to_thread(
+                    ext_service_manager.upsert,
                     slug=s,
                     name=n,
                     url=u,
@@ -289,8 +295,8 @@ def _confirm_delete(svc, container, _state) -> None:
                 "text-[var(--lx-text-muted)]"
             )
 
-            def _do_delete(s=svc):
-                ext_service_manager.delete(s.id)
+            async def _do_delete(s=svc):
+                await asyncio.to_thread(ext_service_manager.delete, s.id)
                 routing.remove_service(s.slug)
                 ui.notify(f"Service '{s.name}' gelöscht.", type="positive")
                 dlg.close()

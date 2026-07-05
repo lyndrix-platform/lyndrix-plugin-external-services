@@ -27,21 +27,53 @@ manifest = ModuleManifest(
         "subscribe": ["db:connected", "external_services:register"],
         "emit": [],
     },
+    # Identity & Permissions 2.0: role bundles. Permissions are fully
+    # qualified (plugin:<id>:api:*) rather than the bare "api:read"/"api:write"
+    # globals, so granting these roles only affects this plugin.
+    roles=[
+        {
+            "id": "viewer",
+            "label": "External Services Viewer",
+            "permissions": ["plugin:lyndrix.plugin.external_services:api:read"],
+            "auto_map_groups": [],
+            "description": "Read-only access to embedded external services.",
+        },
+        {
+            "id": "operator",
+            "label": "External Services Operator",
+            "permissions": [
+                "plugin:lyndrix.plugin.external_services:api:read",
+                "plugin:lyndrix.plugin.external_services:api:write",
+            ],
+            "auto_map_groups": [],
+            "description": "Manage embedded external service entries.",
+        },
+        {
+            "id": "admin",
+            "label": "External Services Administrator",
+            "permissions": [
+                "plugin:lyndrix.plugin.external_services:api:read",
+                "plugin:lyndrix.plugin.external_services:api:write",
+            ],
+            "auto_map_groups": ["INT_ADMIN"],
+            "description": "Full control over external service configuration.",
+        },
+    ],
 )
 
 plugin_state: dict = {"ready": False}
 
 
-def render_overview_ui(ctx: ModuleContext) -> None:
-    _render_overview_ui(ctx)
+async def render_overview_ui(ctx: ModuleContext) -> None:
+    await _render_overview_ui(ctx)
 
 
 def render_settings_ui(ctx: ModuleContext) -> None:
     _render_settings_ui(ctx)
 
 
-def render_dashboard_widget(ctx: ModuleContext) -> None:
-    _render_dashboard_widget(ctx)
+async def render_dashboard_widget(ctx: ModuleContext) -> None:
+    await _render_dashboard_widget(ctx)
 
 
 def setup(ctx: ModuleContext) -> None:
@@ -109,7 +141,7 @@ def _register_overview_page(ctx: ModuleContext) -> None:
     @ui.page("/external")
     @main_layout("External Services")
     async def _external_hub() -> None:
-        render_overview_ui(ctx)
+        await render_overview_ui(ctx)
 
 
 async def health(ctx: ModuleContext) -> PluginHealthStatus:
