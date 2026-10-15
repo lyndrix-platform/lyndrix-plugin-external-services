@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-10-15
+### Fixed
+- Sidebar entries finally appear: the plugin now publishes one navigation entry per enabled service through the sanctioned core API `ctx.register_nav_entries()` (core ≥ 1.7 / API 1.9). Up to 1.2.0 it injected virtual manifests through a `core.api.module_manager` export that never existed, so no entry was ever shown — and the virtual entries would have polluted the cluster's plugin fingerprint (`plugin_artifacts` preflight check).
+
+### Changed
+- The React shell lists the services under *Services* and opens them embedded at `/ext/<plugin>/<slug>` (`open_mode: iframe`) or in a new tab (`open_mode: new_tab`); the NiceGUI page `/external/{slug}` is unchanged.
+- `min_core_version` is 1.7.0. On an older core the plugin still loads and serves its API, but logs one warning and shows no sidebar entries.
+
 ## [1.2.0] - 2026-10-15
 ### Fixed
 - `health()` no longer runs DDL (`create_all` + `ALTER TABLE`) on every poll; it

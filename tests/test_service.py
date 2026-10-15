@@ -15,11 +15,30 @@ from ext_plugin.app.model.models import ExternalService
 
 
 class _FakeCtx:
+    """Records cluster announcements and the nav entry sets handed to the core."""
+
     def __init__(self):
         self.events = []
+        self.nav = []          # every register_nav_entries() call (list of entries)
 
     def emit(self, topic, payload=None, cluster=False):
         self.events.append((topic, payload, cluster))
+
+    def register_nav_entries(self, entries):
+        self.nav.append([dict(e) for e in entries])
+        return len(entries)
+
+    @property
+    def published(self):
+        """Slugs of the entry set currently published."""
+        return sorted(e["id"] for e in (self.nav[-1] if self.nav else []))
+
+
+class _FakeCtxNoNav:
+    """A core older than API 1.9: no register_nav_entries at all."""
+
+    def emit(self, topic, payload=None, cluster=False):
+        pass
 
 
 def _engine():
@@ -53,17 +72,12 @@ def mgr(db):
 
 @pytest.fixture
 def registry(monkeypatch):
-    # NOTE: core.api does not export ``module_manager`` (routing imports it
-    # lazily and only logs a warning when it is missing), so the tests provide one.
-    import core.api
-    from types import SimpleNamespace
-
-    reg = {}
-    monkeypatch.setattr(core.api, "module_manager", SimpleNamespace(registry=reg), raising=False)
+    """A routing module bound to a fake ctx (core API >= 1.9 nav surface)."""
     ctx = _FakeCtx()
     monkeypatch.setattr(routing, "_ctx", ctx)
     monkeypatch.setattr(routing, "_loop", None)
-    return reg, ctx
+    monkeypatch.setattr(routing, "_entries", {})
+    return ctx.nav, ctx
 
 
 # --- smoke -----------------------------------------------------------------------
@@ -157,24 +171,49 @@ def test_manifest_declares_changed_topic_both_ways():
 # --- sidebar sync across instances -----------------------------------------------
 
 def test_refresh_and_remove_announce_to_cluster(mgr, registry):
-    reg, ctx = registry
-    svc = mgr.upsert(slug="ha", name="HA", url="https://ha.example.com")
+    _nav, ctx = registry
+    svc = mgr.upsert(slug="ha", name="HA", url="https://ha.example.com", open_mode="new_tab")
     routing.refresh_service(svc)
-    assert "external.service.ha" in reg
+    assert ctx.published == ["ha"]
+    entry = ctx.nav[-1][0]
+    assert entry["url"] == "https://ha.example.com" and entry["open_mode"] == "new_tab"
+    assert entry["group"] == "Services" and entry["label"] == "HA"
     assert ctx.events[-1] == ("external_services:changed", {"action": "upsert", "slug": "ha"}, True)
 
     routing.remove_service("ha")
-    assert "external.service.ha" not in reg
+    assert ctx.published == []
     assert ctx.events[-1] == ("external_services:changed", {"action": "delete", "slug": "ha"}, True)
-    assert len(ctx.events) == 2  # refresh's internal remove does not announce
+    assert len(ctx.events) == 2  # one announcement per operation
+
+
+def test_hidden_or_disabled_services_get_no_entry(mgr, registry):
+    _nav, ctx = registry
+    hidden = mgr.upsert(slug="hid", name="Hidden", url="https://h.example.com", show_in_nav=False)
+    routing.refresh_service(hidden, announce_change=False)
+    assert ctx.published == []
+    shown = mgr.upsert(slug="vis", name="Visible", url="https://v.example.com")
+    routing.refresh_service(shown, announce_change=False)
+    assert ctx.published == ["vis"]
+    mgr.update(shown.id, enabled=False)
+    routing.refresh_service(mgr.get_by_id(shown.id), announce_change=False)
+    assert ctx.published == []
+    assert ctx.events == []
+
+
+def test_old_core_without_nav_api_is_tolerated(mgr, registry, monkeypatch):
+    _nav, ctx = registry
+    monkeypatch.setattr(routing, "_ctx", _FakeCtxNoNav(), raising=True)
+    svc = mgr.upsert(slug="ha", name="HA", url="https://ha.example.com")
+    routing.refresh_service(svc, announce_change=False)   # must not raise
+    assert routing.registered_slugs() == ["ha"]
 
 
 def test_resync_on_peer_change(mgr, registry):
-    reg, ctx = registry
+    _nav, ctx = registry
     a = mgr.upsert(slug="ha", name="HA", url="https://ha.example.com")
     b = mgr.upsert(slug="graf", name="Grafana", url="https://grafana.example.com")
     routing.register_all([a, b])
-    reg["lyndrix.plugin.other"] = {"manifest": None}  # unrelated entries survive
+    assert ctx.published == ["graf", "ha"]
 
     # a peer renamed "ha", disabled "graf" and added "nb"
     mgr.update(a.id, name="Home Assistant")
@@ -182,6 +221,6 @@ def test_resync_on_peer_change(mgr, registry):
     mgr.upsert(slug="nb", name="NetBox", url="https://netbox.example.com")
     routing.resync(mgr.get_enabled())
 
-    assert set(reg) == {"external.service.ha", "external.service.nb", "lyndrix.plugin.other"}
-    assert reg["external.service.ha"]["manifest"].name == "Home Assistant"
+    assert ctx.published == ["ha", "nb"]
+    assert {e["id"]: e["label"] for e in ctx.nav[-1]}["ha"] == "Home Assistant"
     assert ctx.events == []  # applying a peer change never re-announces

@@ -20,18 +20,19 @@ from .app.ui.nicegui.widget import render_dashboard_widget as _render_dashboard_
 manifest = ModuleManifest(
     id="lyndrix.plugin.external_services",
     name="External Services",
-    version="1.2.0",
+    version="1.3.0",
     description="Embed external web services (Home Assistant, Grafana, …) via iframe.",
     author="Lyndrix",
     icon="public",
     type="PLUGIN",
-    min_core_version="0.0.6",
+    min_core_version="1.7.0",   # ctx.register_nav_entries (core API 1.9)
     auto_enable_on_install=True,
     repo_url="https://github.com/lyndrix-platform/lyndrix-plugin-external-services",
     ui_route="/external",
     permissions={
-        # external_services:changed is cluster-bridged: every instance re-syncs
-        # its (per-process) sidebar entries when a peer changed a service.
+        # external_services:changed is cluster-bridged: every instance re-publishes
+        # its (per-process) sidebar entries (ctx.register_nav_entries) when a peer
+        # changed a service.
         "subscribe": ["db:connected", "external_services:register", "external_services:changed"],
         "emit": ["external_services:changed"],
     },

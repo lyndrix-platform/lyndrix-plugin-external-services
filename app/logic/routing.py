@@ -1,37 +1,46 @@
 """
-routing.py — Sidebar-nav injection for ExternalService entries.
+routing.py — sidebar entries for ExternalService rows (core API ≥ 1.9).
 
-The page itself is served by a single parameterised NiceGUI route at
-``/external/{slug}`` (see ``app/ui/nicegui/pages.py``) which resolves the
-service at request time, so enable/disable/edit/delete take effect immediately
-without a process restart.
+Every enabled service with ``show_in_nav`` becomes one navigation entry that
+this plugin publishes through ``ctx.register_nav_entries()``. The React shell
+lists the entries under *Services* and opens them embedded (``open_mode``
+``iframe`` → ``/ext/<plugin>/<slug>``) or in a new tab; the NiceGUI engine
+keeps serving its own slug-resolved page at ``/external/{slug}`` (see
+``app/ui/nicegui/pages.py``), which resolves the service at request time, so
+enable/disable/edit/delete take effect immediately without a process restart.
 
-This module only manages the *navigation* side: it injects/removes a virtual
-manifest entry in ``module_manager.registry`` so each service shows up in the
-main sidebar under "Services". It is the single orchestration point used by the
-REST API, the NiceGUI settings form and the ``external_services:register`` bus
-topic.
+This module is the single orchestration point used by the REST API, the NiceGUI
+settings form and the ``external_services:register`` bus topic.
 
-Cluster mode: the registry is per process. Every local change is announced as
+Cluster mode: nav entries are per process. Every local change is announced as
 ``external_services:changed`` with ``cluster=True``; peers receive the relayed
 copy (``payload["_origin"]`` set) and call :func:`resync` with the enabled
 services from the shared database.
+
+History: up to 1.2.0 this module injected virtual manifests into the module
+registry through a ``core.api.module_manager`` export that never existed — the
+entries never appeared, and had they, they would have polluted the cluster's
+plugin fingerprint. 1.3.0 uses the sanctioned API instead (core ≥ 1.7).
 """
 
 import asyncio
 import functools
 import logging
-from typing import Iterable, Optional
+from typing import Dict, Iterable, Optional
 
 from ..model.models import ExternalService
 
 log = logging.getLogger("Plugin:ExternalServices:Routing")
 
 CHANGED_TOPIC = "external_services:changed"
-_VIRTUAL_PREFIX = "external.service."
+NAV_GROUP = "Services"
+_DEFAULT_ICON = "open_in_browser"
 
 _ctx: Optional[object] = None
 _loop: Optional[asyncio.AbstractEventLoop] = None
+# slug → nav entry currently published by this process.
+_entries: Dict[str, dict] = {}
+_api_warned = False
 
 
 def set_context(ctx: object) -> None:
@@ -43,6 +52,7 @@ def set_context(ctx: object) -> None:
         _loop = asyncio.get_running_loop()
     except RuntimeError:
         _loop = None
+    _entries.clear()
 
 
 def announce(action: str, slug: Optional[str] = None) -> None:
@@ -64,35 +74,65 @@ def announce(action: str, slug: Optional[str] = None) -> None:
         log.warning(f"NAV: could not announce '{action}' for '{slug}': {exc}")
 
 
+def nav_entry(svc: ExternalService) -> dict:
+    """The sidebar entry for one service (``ctx.register_nav_entries`` shape)."""
+    return {
+        "id": svc.slug,
+        "label": svc.name,
+        "url": svc.url,
+        "icon": svc.icon or _DEFAULT_ICON,
+        "open_mode": "new_tab" if svc.open_mode == "new_tab" else "iframe",
+        "group": NAV_GROUP,
+        "description": svc.description or None,
+    }
+
+
+def registered_slugs() -> list:
+    """Slugs currently published by this process (diagnostics / tests)."""
+    return sorted(_entries)
+
+
+def _publish() -> None:
+    """Hand the complete entry set to the core (replaces the previous set)."""
+    global _api_warned
+    register = getattr(_ctx, "register_nav_entries", None)
+    if not callable(register):
+        if not _api_warned:
+            log.warning("NAV: this core has no ctx.register_nav_entries (API < 1.9) — services get no sidebar entries.")
+            _api_warned = True
+        return
+    try:
+        register(list(_entries.values()))
+    except Exception as exc:
+        log.warning(f"NAV: could not publish {len(_entries)} sidebar entr(y/ies): {exc}")
+
+
 def resync(services: Iterable[ExternalService]) -> None:
     """Rebuild every sidebar entry from ``services`` (the enabled rows).
 
     Used when a peer instance changed the services: entries of removed or
-    disabled services disappear, changed ones are re-injected. Never announces.
+    disabled services disappear, changed ones are re-published. Never announces.
     """
-    wanted = list(services)
-    try:
-        from core.api import module_manager
-
-        stale = [k for k in list(module_manager.registry) if k.startswith(_VIRTUAL_PREFIX)]
-    except Exception as exc:
-        log.warning(f"NAV: resync could not read the registry: {exc}")
-        stale = []
-    for virtual_id in stale:
-        remove_service(virtual_id[len(_VIRTUAL_PREFIX):], announce_change=False)
-    register_all(wanted)
+    _entries.clear()
+    for svc in services:
+        if svc.enabled and svc.show_in_nav:
+            _entries[svc.slug] = nav_entry(svc)
+    _publish()
+    log.info(f"NAV: {len(_entries)} sidebar entr{'y' if len(_entries) == 1 else 'ies'} published.")
 
 
 def register_all(services: Iterable[ExternalService]) -> None:
-    """Inject sidebar nav for every enabled service (called at startup)."""
-    for svc in services:
-        register_service(svc)
+    """Publish sidebar entries for every enabled service (called at startup)."""
+    resync(services)
 
 
 def register_service(svc: ExternalService) -> None:
-    """Inject a single service's sidebar entry (idempotent)."""
+    """Publish a single service's sidebar entry (idempotent)."""
     if svc.enabled and svc.show_in_nav:
-        _inject_nav_entry(svc)
+        _entries[svc.slug] = nav_entry(svc)
+    else:
+        _entries.pop(svc.slug, None)
+    _publish()
 
 
 def refresh_service(svc: ExternalService, *, announce_change: bool = True) -> None:
@@ -102,52 +142,15 @@ def refresh_service(svc: ExternalService, *, announce_change: bool = True) -> No
     exactly one code path for the operation. The page route is global and
     slug-resolved, so only the nav entry needs reconciling here.
     """
-    remove_service(svc.slug, announce_change=False)
     register_service(svc)
     if announce_change:
         announce("upsert", svc.slug)
 
 
 def remove_service(slug: str, *, announce_change: bool = True) -> None:
-    """Remove a service's sidebar nav entry (announced to peers by default)."""
-    virtual_id = f"{_VIRTUAL_PREFIX}{slug}"
-    try:
-        from core.api import module_manager
-
-        if virtual_id in module_manager.registry:
-            del module_manager.registry[virtual_id]
-            log.info(f"NAV: Removed sidebar entry for '{slug}'.")
-    except Exception as exc:
-        log.warning(f"NAV: Could not remove entry for '{slug}': {exc}")
+    """Remove a service's sidebar entry (announced to peers by default)."""
+    if _entries.pop(slug, None) is not None:
+        _publish()
+        log.info(f"NAV: Removed sidebar entry for '{slug}'.")
     if announce_change:
         announce("delete", slug)
-
-
-def _inject_nav_entry(svc: ExternalService) -> None:
-    """Add a virtual manifest entry to module_manager so the sidebar shows this service."""
-    try:
-        from core.api import ModuleManifest, ModulePermissions, module_manager
-
-        virtual_id = f"{_VIRTUAL_PREFIX}{svc.slug}"
-        if virtual_id in module_manager.registry:
-            return
-
-        virtual_manifest = ModuleManifest(
-            id=virtual_id,
-            name=svc.name,
-            icon=svc.icon or "open_in_browser",
-            type="PLUGIN",
-            ui_route=f"/external/{svc.slug}",
-            version="1.0.0",
-            description=svc.description or f"External service: {svc.name}",
-            permissions=ModulePermissions(),
-        )
-        module_manager.registry[virtual_id] = {
-            "manifest": virtual_manifest,
-            "module": None,
-            "context": _ctx,
-            "status": "active",
-        }
-        log.info(f"NAV: Injected sidebar entry for '{svc.slug}'.")
-    except Exception as exc:
-        log.warning(f"NAV: Could not inject sidebar entry for '{svc.slug}': {exc}")

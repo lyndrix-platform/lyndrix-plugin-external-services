@@ -7,7 +7,7 @@ A Lyndrix plugin that embeds external web services (Home Assistant, Grafana, Net
 ## Features
 
 - **Automatic routing** — every service gets a dedicated page at `/external/<slug>`, registered at runtime without a restart
-- **Sidebar integration** — each service appears in the Lyndrix sidebar under *Services*, indistinguishable from native plugins
+- **Sidebar integration** — each service appears in the Lyndrix sidebar under *Services* (core API ≥ 1.9 `ctx.register_nav_entries`); embedded services open at `/ext/lyndrix-plugin-external_services/<slug>`, `new_tab` services as plain links
 - **REST API** — authenticated full CRUD at `/api/plugins/lyndrix.plugin.external_services/` so other services (e.g. lyndrix-iac-orchestrator) can register services programmatically (an API key / `api:read`+`api:write` permission is required)
 - **Event bus** — publish `external_services:register` from any plugin to register a service in-process
 - **Settings UI** — manage services through the plugin settings modal (add / edit / delete with live preview)
