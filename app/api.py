@@ -19,8 +19,14 @@ Note: the public path moved from the old unauthenticated /api/external-services/
 to the core-managed plugin namespace above and now requires authentication.
 External callers (e.g. the IAC orchestrator) must update their target URL + send
 an API key, or use the in-process ``external_services:register`` event instead.
+
+Mutating handlers are ``async``: the blocking DB work runs in
+``asyncio.to_thread`` while the (per-process) sidebar registry is only touched
+on the event loop. Every mutation is announced to peer instances
+(``external_services:changed``, cluster-bridged) by ``routing``.
 """
 
+import asyncio
 import logging
 import re
 from typing import Optional
@@ -116,10 +122,11 @@ def build_router() -> APIRouter:
         status_code=201,
         dependencies=[Depends(require_permission(PERM_WRITE))],
     )
-    def create_service(data: ServiceCreate):
+    async def create_service(data: ServiceCreate):
         slug = _slugify(data.route or data.service)
         try:
-            svc = ext_service_manager.upsert(
+            svc = await asyncio.to_thread(
+                ext_service_manager.upsert,
                 slug=slug,
                 name=data.name,
                 url=data.url,
@@ -140,16 +147,16 @@ def build_router() -> APIRouter:
         "/{service_id}",
         dependencies=[Depends(require_permission(PERM_WRITE))],
     )
-    def update_service(service_id: int, data: ServiceUpdate):
+    async def update_service(service_id: int, data: ServiceUpdate):
         updates = {k: v for k, v in data.dict().items() if v is not None}
         try:
-            updated = ext_service_manager.update(service_id, **updates)
+            updated = await asyncio.to_thread(ext_service_manager.update, service_id, **updates)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not updated:
             raise HTTPException(status_code=404, detail="Service not found")
 
-        svc = ext_service_manager.get_by_id(service_id)
+        svc = await asyncio.to_thread(ext_service_manager.get_by_id, service_id)
         if svc:
             routing.refresh_service(svc)
         return {"ok": True}
@@ -158,12 +165,12 @@ def build_router() -> APIRouter:
         "/{service_id}",
         dependencies=[Depends(require_permission(PERM_WRITE))],
     )
-    def delete_service(service_id: int):
-        svc = ext_service_manager.get_by_id(service_id)
+    async def delete_service(service_id: int):
+        svc = await asyncio.to_thread(ext_service_manager.get_by_id, service_id)
         if not svc:
             raise HTTPException(status_code=404, detail="Service not found")
         slug = svc.slug
-        if not ext_service_manager.delete(service_id):
+        if not await asyncio.to_thread(ext_service_manager.delete, service_id):
             raise HTTPException(status_code=404, detail="Service not found")
         routing.remove_service(slug)
         return {"ok": True}
@@ -172,9 +179,10 @@ def build_router() -> APIRouter:
         "/reload",
         dependencies=[Depends(require_permission(PERM_WRITE))],
     )
-    def reload_services():
-        services = ext_service_manager.get_enabled()
-        routing.register_all(services)
+    async def reload_services():
+        services = await asyncio.to_thread(ext_service_manager.get_enabled)
+        routing.resync(services)
+        routing.announce("reload")
         return {"registered": len(services)}
 
     return router

@@ -4,7 +4,13 @@ import time
 from core.api import ModuleContext, ModuleManifest, PluginHealthStatus, db_instance
 
 from .app.api import build_router
-from .app.logic.routing import register_all, register_service, set_context
+from .app.logic.routing import (
+    CHANGED_TOPIC,
+    refresh_service,
+    register_all,
+    resync,
+    set_context,
+)
 from .app.logic.service import ext_service_manager
 from .app.ui.nicegui.overview import render_overview_ui as _render_overview_ui
 from .app.ui.nicegui.pages import register_pages
@@ -14,7 +20,7 @@ from .app.ui.nicegui.widget import render_dashboard_widget as _render_dashboard_
 manifest = ModuleManifest(
     id="lyndrix.plugin.external_services",
     name="External Services",
-    version="1.1.0",
+    version="1.2.0",
     description="Embed external web services (Home Assistant, Grafana, …) via iframe.",
     author="Lyndrix",
     icon="public",
@@ -24,8 +30,10 @@ manifest = ModuleManifest(
     repo_url="https://github.com/lyndrix-platform/lyndrix-plugin-external-services",
     ui_route="/external",
     permissions={
-        "subscribe": ["db:connected", "external_services:register"],
-        "emit": [],
+        # external_services:changed is cluster-bridged: every instance re-syncs
+        # its (per-process) sidebar entries when a peer changed a service.
+        "subscribe": ["db:connected", "external_services:register", "external_services:changed"],
+        "emit": ["external_services:changed"],
     },
     # Identity & Permissions 2.0: role bundles. Permissions are fully
     # qualified (plugin:<id>:api:*) rather than the bare "api:read"/"api:write"
@@ -91,17 +99,45 @@ def setup(ctx: ModuleContext) -> None:
     register_pages()
     _register_overview_page(ctx)
 
+    async def _bootstrap() -> None:
+        # All DB work (table create + migration + read) is offloaded so it never
+        # blocks the event loop. The DDL is bootstrap-locked and race-tolerant;
+        # even if it fails (e.g. a peer holds the lock too long) the table
+        # usually exists already, so the nav entries are still registered.
+        try:
+            await asyncio.to_thread(ext_service_manager.ensure_table)
+        except Exception as exc:
+            ctx.log.error(f"External Services: schema bootstrap failed: {exc}")
+        try:
+            svcs = await asyncio.to_thread(ext_service_manager.get_enabled)
+        except Exception as exc:
+            ctx.log.error(f"External Services: could not load services: {exc}")
+            return
+        register_all(svcs)
+        ctx.log.info(f"External Services: registered {len(svcs)} service(s).")
+
+    # db:connected usually fired before the plugin was activated — bootstrap
+    # right away in the background, and again on every reconnect.
+    if db_instance.is_connected:
+        _spawn(ctx, _bootstrap())
+
     @ctx.subscribe("db:connected")
     async def on_db_connected(payload) -> None:
         del payload
-        # All DB work (table create + migration + read) is guarded behind
-        # db:connected and offloaded so it never blocks the event loop.
-        await asyncio.to_thread(ext_service_manager.ensure_table)
-        svcs = await asyncio.to_thread(ext_service_manager.get_enabled)
-        register_all(svcs)
-        ctx.log.info(
-            f"External Services: registered {len(svcs)} service(s) after db:connected."
-        )
+        await _bootstrap()
+
+    @ctx.subscribe(CHANGED_TOPIC)
+    async def on_changed(payload) -> None:
+        # Our own emit reaches us without _origin — the local registry is
+        # already up to date then. Relayed copies come from a peer instance.
+        if not isinstance(payload, dict) or not payload.get("_origin"):
+            return
+        try:
+            svcs = await asyncio.to_thread(ext_service_manager.get_enabled)
+        except Exception as exc:
+            ctx.log.warning(f"External Services: peer change not applied: {exc}")
+            return
+        resync(svcs)
 
     @ctx.subscribe("external_services:register")
     async def on_register(payload) -> None:
@@ -118,11 +154,20 @@ def setup(ctx: ModuleContext) -> None:
         if svc is None:
             return
 
-        register_service(svc)
+        refresh_service(svc)  # re-injects the nav entry and announces it to peers
         ctx.log.info(f"External Services: registered '{svc.name}' via event bus.")
 
     plugin_state["ready"] = True
     ctx.log.info("External Services: setup complete.")
+
+
+def _spawn(ctx: ModuleContext, coro) -> None:
+    """Start background work via ctx.create_task (older cores: the running loop)."""
+    create_task = getattr(ctx, "create_task", None)
+    if callable(create_task):
+        create_task(coro, name="external_services:bootstrap")
+    else:
+        asyncio.get_running_loop().create_task(coro)
 
 
 def _register_overview_page(ctx: ModuleContext) -> None:
@@ -150,7 +195,7 @@ async def health(ctx: ModuleContext) -> PluginHealthStatus:
     Goes beyond "setup ran" by actually exercising the persistence path this
     plugin depends on: it confirms the DB is connected, that the
     ``external_services`` table is reachable, and reports how many services are
-    registered/enabled. The sync ORM calls are offloaded to a thread so the
+    registered/enabled (one COUNT query, never DDL). The sync ORM calls are offloaded to a thread so the
     health check never blocks the event loop.
     """
     start = time.perf_counter()
@@ -168,14 +213,8 @@ async def health(ctx: ModuleContext) -> PluginHealthStatus:
         )
 
     try:
-        def _probe() -> tuple[int, int]:
-            ext_service_manager.ensure_table()
-            return (
-                len(ext_service_manager.get_all()),
-                len(ext_service_manager.get_enabled()),
-            )
-
-        total, enabled = await asyncio.to_thread(_probe)
+        # One COUNT query — no DDL here, every instance polls this.
+        total, enabled = await asyncio.to_thread(ext_service_manager.count)
     except Exception as exc:  # DB query failed → the plugin cannot serve anything
         return PluginHealthStatus(
             status="error",

@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-10-15
+### Fixed
+- `health()` no longer runs DDL (`create_all` + `ALTER TABLE`) on every poll; it
+  issues a single `COUNT` query (`ext_service_manager.count()`).
+- Cluster-safe schema bootstrap: `ensure_table()` creates only this plugin's
+  table (`checkfirst=True`), uses `ADD COLUMN IF NOT EXISTS` on MariaDB, runs
+  under `db_instance.advisory_lock("lyndrix_bootstrap")` (getattr-guarded) and
+  treats MariaDB 1050/1060 as "a peer did it". A failed or lost bootstrap never
+  skips `register_all`.
+- The bootstrap now also runs when the plugin is activated after
+  `db:connected` already fired (the normal boot order) — before, the table was
+  only created as a side effect of the health probe and the nav entries were
+  not registered at boot.
+
+### Changed
+- Sidebar entries are per process; every create/update/delete/register (REST,
+  NiceGUI, `external_services:register`) and `POST /reload` is announced as
+  `external_services:changed` with `cluster=True`. Peers re-read the enabled
+  services from the database and rebuild their entries (removed/disabled slugs
+  disappear). `POST /reload` now also drops stale entries.
+- Mutating REST handlers are `async`: DB work runs in `asyncio.to_thread`, the
+  in-memory registry is only mutated on the event loop.
+- Services pushed via `external_services:register` are refreshed (not only
+  added), so a renamed service updates its sidebar entry.
+
+### Known issues
+- `core.api` does not export `module_manager`, so sidebar injection logs
+  "NAV: Could not inject sidebar entry" and the per-service nav entries do not
+  appear (pre-existing; the `/external/<slug>` pages work). Needs a core API
+  for virtual nav entries.
+
 ## [0.2.0] - 2026-06-27
 ### Security
 - **Critical**: closed the anonymous REST API. The router is now mounted by core

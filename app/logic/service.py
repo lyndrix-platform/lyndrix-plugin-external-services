@@ -7,7 +7,9 @@ import re
 from typing import List, Optional
 from urllib.parse import urlparse
 
-from core.api import Base, db_instance
+from contextlib import nullcontext
+
+from core.api import db_instance
 
 from ..model.models import ExternalService
 
@@ -17,6 +19,30 @@ log = logging.getLogger("Plugin:ExternalServices")
 # schemes such as ``javascript:`` (which would execute when handed to
 # ``window.open``) and is the single choke point every write path goes through.
 _ALLOWED_URL_SCHEMES = ("http", "https")
+
+_TABLE = "external_services"
+# Columns added after the initial release: (name, DDL definition).
+_MIGRATIONS = (("open_mode", "VARCHAR(20) NOT NULL DEFAULT 'iframe'"),)
+
+# A lost bootstrap race on MariaDB: 1050 table exists / 1060 duplicate column.
+_DDL_RACE_CODES = ("1050", "1060")
+_DDL_RACE_TEXT = ("already exists", "duplicate column")
+
+
+def _is_ddl_race(exc: Exception) -> bool:
+    msg = str(getattr(exc, "orig", exc))
+    return any(c in msg for c in _DDL_RACE_CODES) or any(t in msg.lower() for t in _DDL_RACE_TEXT)
+
+
+def _is_mariadb(engine) -> bool:
+    dialect = engine.dialect
+    return dialect.name == "mariadb" or bool(getattr(dialect, "is_mariadb", False))
+
+
+def _bootstrap_lock():
+    """``db_instance.advisory_lock("lyndrix_bootstrap")`` on cores that have it."""
+    lock = getattr(db_instance, "advisory_lock", None)
+    return lock("lyndrix_bootstrap") if callable(lock) else nullcontext()
 
 
 def _slugify(text: str) -> str:
@@ -50,36 +76,62 @@ def validate_url(url: str) -> str:
 class ExternalServiceManager:
 
     def ensure_table(self) -> None:
-        """Idempotently create the external_services table and apply any column migrations."""
-        Base.metadata.create_all(bind=db_instance.engine)
-        self._migrate_schema()
+        """Idempotently create the external_services table and apply column migrations.
 
-    def _migrate_schema(self) -> None:
-        """Add new columns to existing external_services table without dropping it."""
+        Cluster-safe: serialized across booting instances by the core's
+        ``lyndrix_bootstrap`` advisory lock (when the core provides it), only
+        touches this plugin's own table (``checkfirst``), uses ``ADD COLUMN IF
+        NOT EXISTS`` on MariaDB, and treats a lost race (1050 table exists /
+        1060 duplicate column) as "a peer did it". Blocking — call it via
+        ``asyncio.to_thread``. Never call it from ``health()``.
+        """
+        engine = db_instance.engine
+        with _bootstrap_lock():
+            try:
+                ExternalService.__table__.create(bind=engine, checkfirst=True)
+            except Exception as exc:
+                if not _is_ddl_race(exc):
+                    raise
+                log.info(f"BOOTSTRAP: table created by a peer ({exc!s:.120})")
+            self._migrate_schema(engine)
+
+    def _migrate_schema(self, engine) -> None:
+        """Add new columns to an existing external_services table without dropping it."""
         import sqlalchemy
 
+        existing = {c["name"] for c in sqlalchemy.inspect(engine).get_columns(_TABLE)}
+        if_not_exists = "IF NOT EXISTS " if _is_mariadb(engine) else ""
         # NOTE: every identifier below is a hardcoded constant. The f-string DDL
         # is only safe because none of these values is ever user-derived — never
         # interpolate request/payload data into this statement.
-        migrations = [
-            ("external_services", "open_mode", "VARCHAR(20) NOT NULL DEFAULT 'iframe'"),
-        ]
-        with db_instance.engine.connect() as conn:
-            for table, column, col_def in migrations:
-                try:
+        for column, col_def in _MIGRATIONS:
+            if column in existing:
+                continue
+            try:
+                with engine.begin() as conn:
                     conn.execute(
                         sqlalchemy.text(
-                            f"ALTER TABLE `{table}` ADD COLUMN `{column}` {col_def}"
+                            f"ALTER TABLE `{_TABLE}` ADD COLUMN {if_not_exists}`{column}` {col_def}"
                         )
                     )
-                    conn.commit()
-                    log.info(f"MIGRATE: Added column `{table}.{column}`.")
-                except Exception as e:
-                    err = str(e)
-                    if "Duplicate column name" in err or "already exists" in err:
-                        pass  # already present
-                    else:
-                        log.warning(f"MIGRATE: Could not add `{table}.{column}`: {e}")
+                log.info(f"MIGRATE: Added column `{_TABLE}.{column}`.")
+            except Exception as exc:
+                if _is_ddl_race(exc):
+                    continue  # a peer added it between inspect and ALTER
+                log.warning(f"MIGRATE: Could not add `{_TABLE}.{column}`: {exc}")
+
+    def count(self) -> tuple[int, int]:
+        """``(total, enabled)`` in one ``COUNT`` query — cheap enough for health()."""
+        from sqlalchemy import case, func
+
+        with db_instance.SessionLocal() as s:
+            total, enabled = s.query(
+                func.count(ExternalService.id),
+                func.coalesce(
+                    func.sum(case((ExternalService.enabled.is_(True), 1), else_=0)), 0
+                ),
+            ).one()
+            return int(total or 0), int(enabled or 0)
 
     def get_all(self) -> List[ExternalService]:
         with db_instance.SessionLocal() as s:

@@ -1,55 +1,187 @@
-import importlib
-import sys
-import types
-import unittest
-from unittest.mock import MagicMock
+"""Service + cluster readiness (1.2.0) against an in-memory SQLite engine patched
+into the core's db_instance: locked/idempotent bootstrap DDL, race tolerance,
+COUNT-based health, and the cluster-announced sidebar sync."""
+import asyncio
+from contextlib import contextmanager
+
+import pytest
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from ext_plugin.app.logic import routing
+from ext_plugin.app.logic import service as service_mod
+from ext_plugin.app.model.models import ExternalService
 
 
-def _install_core_api_stub():
-    core_mod = types.ModuleType("core")
-    api_mod = types.ModuleType("core.api")
+class _FakeCtx:
+    def __init__(self):
+        self.events = []
 
-    class _DummyMetadata:
-        @staticmethod
-        def create_all(bind=None):
-            return None
-
-    class _DummyBase:
-        metadata = _DummyMetadata()
-
-    session_mock = MagicMock()
-    session_mock.__enter__.return_value = session_mock
-    session_mock.__exit__.return_value = False
-    session_mock.query.return_value.order_by.return_value.all.return_value = []
-
-    db_instance = types.SimpleNamespace(
-        engine=MagicMock(),
-        SessionLocal=lambda: session_mock,
-    )
-
-    api_mod.Base = _DummyBase
-    api_mod.db_instance = db_instance
-
-    sys.modules.setdefault("core", core_mod)
-    sys.modules["core.api"] = api_mod
-    if "sqlalchemy" not in sys.modules:
-        sqlalchemy_mod = types.ModuleType("sqlalchemy")
-        sqlalchemy_mod.Column = lambda *args, **kwargs: None
-        sqlalchemy_mod.Integer = int
-        sqlalchemy_mod.String = str
-        sqlalchemy_mod.Boolean = bool
-        sys.modules["sqlalchemy"] = sqlalchemy_mod
+    def emit(self, topic, payload=None, cluster=False):
+        self.events.append((topic, payload, cluster))
 
 
-class ServiceSmokeTest(unittest.TestCase):
-    def test_manager_exists_and_empty_payload_does_not_raise(self):
-        _install_core_api_stub()
-
-        service_module = importlib.import_module("app.logic.service")
-
-        self.assertTrue(hasattr(service_module, "ext_service_manager"))
-        service_module.ext_service_manager.register_from_payload({})
+def _engine():
+    return create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
 
 
-if __name__ == "__main__":
-    unittest.main()
+@pytest.fixture
+def db(monkeypatch):
+    engine = _engine()
+    taken = []
+
+    @contextmanager
+    def _lock(name):
+        taken.append(name)
+        yield True
+
+    dbi = service_mod.db_instance
+    monkeypatch.setattr(dbi, "engine", engine, raising=False)
+    monkeypatch.setattr(dbi, "SessionLocal", sessionmaker(bind=engine), raising=False)
+    monkeypatch.setattr(dbi, "is_connected", True, raising=False)
+    monkeypatch.setattr(dbi, "advisory_lock", _lock, raising=False)
+    return engine, taken
+
+
+@pytest.fixture
+def mgr(db):
+    m = service_mod.ExternalServiceManager()
+    m.ensure_table()
+    return m
+
+
+@pytest.fixture
+def registry(monkeypatch):
+    # NOTE: core.api does not export ``module_manager`` (routing imports it
+    # lazily and only logs a warning when it is missing), so the tests provide one.
+    import core.api
+    from types import SimpleNamespace
+
+    reg = {}
+    monkeypatch.setattr(core.api, "module_manager", SimpleNamespace(registry=reg), raising=False)
+    ctx = _FakeCtx()
+    monkeypatch.setattr(routing, "_ctx", ctx)
+    monkeypatch.setattr(routing, "_loop", None)
+    return reg, ctx
+
+
+# --- smoke -----------------------------------------------------------------------
+
+def test_empty_payload_does_not_raise(mgr):
+    assert mgr.register_from_payload({}) is None  # no URL → logged + skipped
+
+
+# --- bootstrap DDL ---------------------------------------------------------------
+
+def test_ensure_table_locked_and_idempotent(db):
+    engine, taken = db
+    m = service_mod.ExternalServiceManager()
+    m.ensure_table()
+    m.ensure_table()
+    assert taken == ["lyndrix_bootstrap", "lyndrix_bootstrap"]
+    tables = inspect(engine).get_table_names()
+    assert tables == ["external_services"]  # never touches other core tables
+
+
+def test_legacy_table_gets_open_mode(db):
+    engine, _ = db
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE external_services (id INTEGER PRIMARY KEY, slug VARCHAR(100) NOT NULL UNIQUE, "
+            "name VARCHAR(100) NOT NULL, description VARCHAR(500), icon VARCHAR(100), url VARCHAR(1000) NOT NULL, "
+            "service_type VARCHAR(50), show_in_nav BOOLEAN, enabled BOOLEAN)"
+        ))
+    service_mod.ExternalServiceManager().ensure_table()
+    cols = {c["name"] for c in inspect(engine).get_columns("external_services")}
+    assert "open_mode" in cols
+
+
+def test_lost_create_race_is_tolerated(db, monkeypatch):
+    engine, _ = db
+    ExternalService.__table__.create(bind=engine)  # the peer won
+
+    def _racy(*a, **kw):
+        raise RuntimeError("(1050, \"Table 'external_services' already exists\")")
+
+    monkeypatch.setattr(ExternalService.__table__, "create", _racy)
+    service_mod.ExternalServiceManager().ensure_table()  # must not raise
+
+
+def test_unexpected_create_error_propagates(db, monkeypatch):
+    def _broken(*a, **kw):
+        raise RuntimeError("(1142, 'CREATE command denied')")
+
+    monkeypatch.setattr(ExternalService.__table__, "create", _broken)
+    with pytest.raises(RuntimeError):
+        service_mod.ExternalServiceManager().ensure_table()
+
+
+def test_ddl_race_detection():
+    assert service_mod._is_ddl_race(RuntimeError("(1060, \"Duplicate column name 'open_mode'\")"))
+    assert service_mod._is_ddl_race(RuntimeError("(1050, \"Table 'x' already exists\")"))
+    assert not service_mod._is_ddl_race(RuntimeError("(1146, \"Table 'x' doesn't exist\")"))
+
+
+# --- count / health --------------------------------------------------------------
+
+def test_count(mgr):
+    assert mgr.count() == (0, 0)
+    mgr.upsert(slug="ha", name="HA", url="https://ha.example.com")
+    mgr.upsert(slug="graf", name="Grafana", url="https://grafana.example.com", enabled=False)
+    assert mgr.count() == (2, 1)
+
+
+def test_health_runs_no_ddl(mgr, monkeypatch):
+    from ext_plugin import entrypoint
+
+    def _no_ddl():
+        raise AssertionError("health() must not run DDL")
+
+    monkeypatch.setattr(entrypoint.ext_service_manager, "ensure_table", _no_ddl)
+    monkeypatch.setitem(entrypoint.plugin_state, "ready", True)
+    mgr.upsert(slug="ha", name="HA", url="https://ha.example.com")
+    status = asyncio.run(entrypoint.health(None))
+    assert status.status == "ok"
+    assert status.details["services_total"] == 1 and status.details["services_enabled"] == 1
+
+
+def test_manifest_declares_changed_topic_both_ways():
+    from ext_plugin import entrypoint
+
+    perms = entrypoint.manifest.permissions
+    assert "external_services:changed" in perms.emit
+    assert "external_services:changed" in perms.subscribe
+
+
+# --- sidebar sync across instances -----------------------------------------------
+
+def test_refresh_and_remove_announce_to_cluster(mgr, registry):
+    reg, ctx = registry
+    svc = mgr.upsert(slug="ha", name="HA", url="https://ha.example.com")
+    routing.refresh_service(svc)
+    assert "external.service.ha" in reg
+    assert ctx.events[-1] == ("external_services:changed", {"action": "upsert", "slug": "ha"}, True)
+
+    routing.remove_service("ha")
+    assert "external.service.ha" not in reg
+    assert ctx.events[-1] == ("external_services:changed", {"action": "delete", "slug": "ha"}, True)
+    assert len(ctx.events) == 2  # refresh's internal remove does not announce
+
+
+def test_resync_on_peer_change(mgr, registry):
+    reg, ctx = registry
+    a = mgr.upsert(slug="ha", name="HA", url="https://ha.example.com")
+    b = mgr.upsert(slug="graf", name="Grafana", url="https://grafana.example.com")
+    routing.register_all([a, b])
+    reg["lyndrix.plugin.other"] = {"manifest": None}  # unrelated entries survive
+
+    # a peer renamed "ha", disabled "graf" and added "nb"
+    mgr.update(a.id, name="Home Assistant")
+    mgr.update(b.id, enabled=False)
+    mgr.upsert(slug="nb", name="NetBox", url="https://netbox.example.com")
+    routing.resync(mgr.get_enabled())
+
+    assert set(reg) == {"external.service.ha", "external.service.nb", "lyndrix.plugin.other"}
+    assert reg["external.service.ha"]["manifest"].name == "Home Assistant"
+    assert ctx.events == []  # applying a peer change never re-announces
