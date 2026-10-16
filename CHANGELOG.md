@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-10-16
+### Added
+- **React UI** for the React shell (`react_ui=True`, Vite IIFE bundle at
+  `app/ui/static/ui_bundle.js`, i18n namespace `external_services` with
+  `locales/external_services.{en,de}.json` — English is the source of truth):
+  - `/apps/lyndrix-plugin-external_services/external/settings` — the plugin's
+    settings page (`settings_ui_route`; the gear button on the Plugins page
+    opens it). Table of every service with a create/edit dialog (name, slug,
+    URL, description, Material icon with live preview, open mode, "show in
+    sidebar", "active"), delete with confirmation, a *Reload* action
+    (`POST /reload`) and success/error feedback. Write controls are hidden for
+    callers without the plugin write permission (the API enforces regardless).
+  - `/apps/lyndrix-plugin-external_services/external/overview` — tile grid of
+    every enabled service. Embedded services with a sidebar entry open through
+    the shell's frame page (`/ext/lyndrix-plugin-external_services/<slug>`),
+    embedded services hidden from the sidebar are framed by the overview itself
+    (`?open=<slug>`), `new_tab` services open in a new browser tab.
+- Plugin setting **`show_overview_in_nav`** (bool, default `false`, core
+  settings dialog). When enabled, the plugin publishes one extra sidebar entry
+  `all-services` (*Alle Dienste*, group *Services*, `order: -1`) that opens the
+  overview in-shell via `open_mode: "route"` (core API 1.10). Older cores
+  reject that mode and skip just this entry with a warning — the per-service
+  entries are unaffected. Re-evaluated at bootstrap (`ctx.get_setting`,
+  getattr-guarded) and on `plugin:settings_changed` on every instance.
+
+### Changed
+- The plugin has **no sidebar tab of its own** any more: both React routes are
+  `sidebar_visible: false`. The services it manages are the sidebar entries
+  (group *Services*). `ui_route="/external"` stays for the NiceGUI engine only.
+- `.gitignore` repaired (it was committed with unresolved merge-conflict
+  markers) and now ignores `node_modules/`.
+
+### Notes
+- The UI uses the existing REST API only; no API changes.
+- Build: `npm install && npm run build` (React, react-i18next and i18next are
+  provided by the shell and externalized), type-check with `npm run typecheck`.
+  The built bundle is committed.
+
 ## [1.3.0] - 2026-10-15
 ### Fixed
 - Sidebar entries finally appear: the plugin now publishes one navigation entry per enabled service through the sanctioned core API `ctx.register_nav_entries()` (core ≥ 1.7 / API 1.9). Up to 1.2.0 it injected virtual manifests through a `core.api.module_manager` export that never existed, so no entry was ever shown — and the virtual entries would have polluted the cluster's plugin fingerprint (`plugin_artifacts` preflight check).

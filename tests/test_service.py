@@ -1,8 +1,11 @@
 """Service + cluster readiness (1.2.0) against an in-memory SQLite engine patched
 into the core's db_instance: locked/idempotent bootstrap DDL, race tolerance,
-COUNT-based health, and the cluster-announced sidebar sync."""
+COUNT-based health, the cluster-announced sidebar sync, and (1.4.0) the
+setting-driven "Alle Dienste" overview entry + React UI manifest/locales."""
 import asyncio
+import json
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, inspect, text
@@ -13,6 +16,8 @@ from ext_plugin.app.logic import routing
 from ext_plugin.app.logic import service as service_mod
 from ext_plugin.app.model.models import ExternalService
 
+_REPO = Path(__file__).resolve().parents[1]
+
 
 class _FakeCtx:
     """Records cluster announcements and the nav entry sets handed to the core."""
@@ -20,6 +25,7 @@ class _FakeCtx:
     def __init__(self):
         self.events = []
         self.nav = []          # every register_nav_entries() call (list of entries)
+        self.settings = {}     # Vault-backed plugin settings (ctx.get_setting)
 
     def emit(self, topic, payload=None, cluster=False):
         self.events.append((topic, payload, cluster))
@@ -27,6 +33,9 @@ class _FakeCtx:
     def register_nav_entries(self, entries):
         self.nav.append([dict(e) for e in entries])
         return len(entries)
+
+    def get_setting(self, key, default=None):
+        return self.settings.get(key, default)
 
     @property
     def published(self):
@@ -77,6 +86,7 @@ def registry(monkeypatch):
     monkeypatch.setattr(routing, "_ctx", ctx)
     monkeypatch.setattr(routing, "_loop", None)
     monkeypatch.setattr(routing, "_entries", {})
+    monkeypatch.setattr(routing, "_overview_enabled", False)
     return ctx.nav, ctx
 
 
@@ -224,3 +234,125 @@ def test_resync_on_peer_change(mgr, registry):
     assert ctx.published == ["ha", "nb"]
     assert {e["id"]: e["label"] for e in ctx.nav[-1]}["ha"] == "Home Assistant"
     assert ctx.events == []  # applying a peer change never re-announces
+
+
+# --- "Alle Dienste" overview entry (1.4.0, setting show_overview_in_nav) ---------
+
+def test_overview_entry_follows_setting(mgr, registry):
+    _nav, ctx = registry
+    svc = mgr.upsert(slug="ha", name="HA", url="https://ha.example.com")
+    routing.register_all([svc])
+    assert ctx.published == ["ha"]
+
+    routing.set_overview_enabled(True)
+    assert routing.overview_enabled() is True
+    assert ctx.published == ["all-services", "ha"]
+    entry = next(e for e in ctx.nav[-1] if e["id"] == "all-services")
+    assert entry["url"] == "/apps/lyndrix-plugin-external_services/external/overview"
+    assert entry["open_mode"] == "route" and entry["group"] == "Services"
+    assert entry["order"] == -1 and entry["icon"] == "apps" and entry["label"] == "Alle Dienste"
+    assert routing.registered_slugs() == ["ha"]   # services only — the extra entry is no slug
+    assert ctx.events == []                       # a local toggle is never announced to peers
+
+    routing.set_overview_enabled(True)            # unchanged → no republish
+    assert len(ctx.nav) == 2
+
+    routing.set_overview_enabled(False)
+    assert ctx.published == ["ha"]
+
+
+def test_overview_entry_survives_resync_and_removals(mgr, registry):
+    _nav, ctx = registry
+    routing.set_overview_enabled(True)
+    a = mgr.upsert(slug="ha", name="HA", url="https://ha.example.com")
+    routing.resync([a])                           # peer change rebuilds the service entries
+    assert ctx.published == ["all-services", "ha"]
+    routing.remove_service("ha", announce_change=False)
+    assert ctx.published == ["all-services"]
+
+
+def test_set_overview_enabled_without_publish_waits_for_register_all(mgr, registry):
+    _nav, ctx = registry
+    routing.set_overview_enabled(True, publish=False)
+    assert ctx.nav == []                          # bootstrap publishes the complete set once
+    routing.register_all([])
+    assert ctx.published == ["all-services"]
+
+
+@pytest.mark.parametrize(
+    "stored,expected",
+    [("true", True), ("True", True), ("1", True), ("on", True), (True, True),
+     ("false", False), ("0", False), ("", False), (None, False), (False, False)],
+)
+def test_read_overview_setting_coerces_bool_and_string(registry, stored, expected):
+    _nav, ctx = registry
+    ctx.settings["show_overview_in_nav"] = stored
+    assert routing.read_overview_setting(ctx) is expected
+
+
+def test_read_overview_setting_defaults_and_old_core(registry):
+    _nav, ctx = registry
+    assert routing.read_overview_setting(ctx) is False        # never saved
+    assert routing.read_overview_setting() is False           # falls back to the bound ctx
+    assert routing.read_overview_setting(_FakeCtxNoNav()) is False   # core without get_setting
+
+    class _VaultDown:
+        def get_setting(self, key, default=None):
+            raise RuntimeError("vault sealed")
+
+    assert routing.read_overview_setting(_VaultDown()) is False     # never breaks bootstrap
+
+
+def test_settings_changed_payload_filter():
+    from ext_plugin import entrypoint
+
+    pid = entrypoint.manifest.id
+    assert entrypoint.settings_changed_for_us({"plugin_id": pid, "keys": ["show_overview_in_nav"], "by": "admin"})
+    assert entrypoint.settings_changed_for_us({"plugin_id": pid})            # no keys → re-read
+    assert not entrypoint.settings_changed_for_us({"plugin_id": pid, "keys": ["other"]})
+    assert not entrypoint.settings_changed_for_us({"plugin_id": "lyndrix.plugin.other", "keys": ["show_overview_in_nav"]})
+    assert not entrypoint.settings_changed_for_us("garbage")
+    assert "plugin:settings_changed" in entrypoint.manifest.permissions.subscribe
+
+
+# --- React UI manifest + locales (1.4.0) -------------------------------------------
+
+def test_manifest_react_ui_has_no_sidebar_tab():
+    from ext_plugin import entrypoint
+
+    m = entrypoint.manifest
+    assert m.version == "1.4.0"
+    assert m.react_ui is True and m.i18n_namespace == "external_services"
+    paths = [r["path"] for r in m.react_routes]
+    assert sorted(paths) == ["/external/overview", "/external/settings"]
+    assert all(r["sidebar_visible"] is False for r in m.react_routes)
+    assert m.settings_ui_route == "/external/settings" and m.settings_ui_route in paths
+    field = next(f for f in m.settings_schema if f.key == "show_overview_in_nav")
+    assert field.kind == "bool" and field.default == "false"
+
+
+def _flatten(tree, prefix=""):
+    out = {}
+    for key, value in tree.items():
+        path = f"{prefix}{key}"
+        if isinstance(value, dict):
+            out.update(_flatten(value, f"{path}."))
+        else:
+            out[path] = value
+    return out
+
+
+def test_locales_en_de_parity_and_i18next_dialect():
+    en = _flatten(json.loads((_REPO / "locales" / "external_services.en.json").read_text("utf-8")))
+    de = _flatten(json.loads((_REPO / "locales" / "external_services.de.json").read_text("utf-8")))
+    assert en, "english locale is the source of truth and must not be empty"
+    assert set(en) == set(de)                     # de is complete, no stray keys
+    for text_ in list(en.values()) + list(de.values()):
+        assert isinstance(text_, str) and text_.strip()
+        assert "%{" not in text_                  # core/NiceGUI dialect never reaches i18next
+
+
+def test_react_bundle_is_committed_with_the_shell_global():
+    bundle = _REPO / "app" / "ui" / "static" / "ui_bundle.js"
+    assert bundle.exists(), "run `npm run build` — the core serves app/ui/static/ui_bundle.js"
+    assert "__lyndrix_plugin_lyndrix_plugin_external_services" in bundle.read_text("utf-8")

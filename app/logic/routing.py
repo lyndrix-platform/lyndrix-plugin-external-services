@@ -12,6 +12,12 @@ enable/disable/edit/delete take effect immediately without a process restart.
 This module is the single orchestration point used by the REST API, the NiceGUI
 settings form and the ``external_services:register`` bus topic.
 
+Besides the per-service entries the plugin can publish one extra entry, *Alle
+Dienste*, that opens the React overview page in-shell (``open_mode: "route"``,
+core API ≥ 1.10 — older cores skip it with a warning). It is switched on by the
+``show_overview_in_nav`` plugin setting (see :func:`read_overview_setting`),
+which every instance re-reads on ``plugin:settings_changed``.
+
 Cluster mode: nav entries are per process. Every local change is announced as
 ``external_services:changed`` with ``cluster=True``; peers receive the relayed
 copy (``payload["_origin"]`` set) and call :func:`resync` with the enabled
@@ -36,15 +42,25 @@ CHANGED_TOPIC = "external_services:changed"
 NAV_GROUP = "Services"
 _DEFAULT_ICON = "open_in_browser"
 
+# Plugin setting (manifest ``settings_schema``) that adds the "Alle Dienste"
+# sidebar entry; stored by the core in Vault, read via ``ctx.get_setting``.
+OVERVIEW_SETTING_KEY = "show_overview_in_nav"
+OVERVIEW_ENTRY_ID = "all-services"
+# In-shell path of the React overview page: ``/apps/<plugin id with "." → "-">``
+# is the shell's convention for plugin React routes.
+OVERVIEW_ROUTE = "/apps/lyndrix-plugin-external_services/external/overview"
+
 _ctx: Optional[object] = None
 _loop: Optional[asyncio.AbstractEventLoop] = None
 # slug → nav entry currently published by this process.
 _entries: Dict[str, dict] = {}
+# Whether the extra "Alle Dienste" entry is published (plugin setting).
+_overview_enabled = False
 _api_warned = False
 
 
 def set_context(ctx: object) -> None:
-    global _ctx, _loop
+    global _ctx, _loop, _overview_enabled
     _ctx = ctx
     # setup() runs on the core loop; remember it so announce() can hop back
     # onto it when a caller runs in a worker thread.
@@ -53,6 +69,7 @@ def set_context(ctx: object) -> None:
     except RuntimeError:
         _loop = None
     _entries.clear()
+    _overview_enabled = False  # re-read from the plugin settings at bootstrap
 
 
 def announce(action: str, slug: Optional[str] = None) -> None:
@@ -87,9 +104,74 @@ def nav_entry(svc: ExternalService) -> dict:
     }
 
 
+def overview_entry() -> dict:
+    """The optional *Alle Dienste* entry that opens the React overview in-shell."""
+    return {
+        "id": OVERVIEW_ENTRY_ID,
+        "label": "Alle Dienste",
+        "url": OVERVIEW_ROUTE,
+        "icon": "apps",
+        # Core API 1.10: an in-shell path. Older cores reject the mode and skip
+        # just this entry (warning) — the per-service entries are unaffected.
+        "open_mode": "route",
+        "group": NAV_GROUP,
+        "order": -1,
+    }
+
+
 def registered_slugs() -> list:
     """Slugs currently published by this process (diagnostics / tests)."""
     return sorted(_entries)
+
+
+def overview_enabled() -> bool:
+    """Whether the *Alle Dienste* entry is currently published."""
+    return _overview_enabled
+
+
+def set_overview_enabled(enabled: bool, *, publish: bool = True) -> None:
+    """Switch the *Alle Dienste* entry on/off and republish when it changed.
+
+    ``publish=False`` only records the flag — used at bootstrap right before
+    :func:`register_all` publishes the complete set anyway. Never announces to
+    peers: the setting lives in Vault and every instance re-reads it on
+    ``plugin:settings_changed`` (a bridged core topic).
+    """
+    global _overview_enabled
+    enabled = bool(enabled)
+    if enabled == _overview_enabled:
+        return
+    _overview_enabled = enabled
+    if publish:
+        _publish()
+    log.info(f"NAV: 'Alle Dienste' overview entry {'enabled' if enabled else 'disabled'}.")
+
+
+def _as_bool(value) -> bool:
+    """Settings arrive as bool (coerced by the core) or as the string default."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def read_overview_setting(ctx: Optional[object] = None) -> bool:
+    """Read ``show_overview_in_nav`` from the plugin settings (blocking: Vault).
+
+    Call it via ``asyncio.to_thread``. Returns ``False`` on cores without
+    ``ctx.get_setting``, when nothing was saved yet, or when Vault is unreachable
+    — the entry is an opt-in extra and must never break the bootstrap.
+    """
+    target = ctx if ctx is not None else _ctx
+    getter = getattr(target, "get_setting", None)
+    if not callable(getter):
+        return False
+    try:
+        return _as_bool(getter(OVERVIEW_SETTING_KEY, False))
+    except Exception as exc:
+        log.warning(f"NAV: could not read setting '{OVERVIEW_SETTING_KEY}': {exc}")
+        return False
 
 
 def _publish() -> None:
@@ -101,10 +183,13 @@ def _publish() -> None:
             log.warning("NAV: this core has no ctx.register_nav_entries (API < 1.9) — services get no sidebar entries.")
             _api_warned = True
         return
+    entries = list(_entries.values())
+    if _overview_enabled:
+        entries.insert(0, overview_entry())
     try:
-        register(list(_entries.values()))
+        register(entries)
     except Exception as exc:
-        log.warning(f"NAV: could not publish {len(_entries)} sidebar entr(y/ies): {exc}")
+        log.warning(f"NAV: could not publish {len(entries)} sidebar entr(y/ies): {exc}")
 
 
 def resync(services: Iterable[ExternalService]) -> None:

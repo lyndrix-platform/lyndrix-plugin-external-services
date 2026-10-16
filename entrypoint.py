@@ -6,10 +6,13 @@ from core.api import ModuleContext, ModuleManifest, PluginHealthStatus, db_insta
 from .app.api import build_router
 from .app.logic.routing import (
     CHANGED_TOPIC,
+    OVERVIEW_SETTING_KEY,
+    read_overview_setting,
     refresh_service,
     register_all,
     resync,
     set_context,
+    set_overview_enabled,
 )
 from .app.logic.service import ext_service_manager
 from .app.ui.nicegui.overview import render_overview_ui as _render_overview_ui
@@ -20,7 +23,7 @@ from .app.ui.nicegui.widget import render_dashboard_widget as _render_dashboard_
 manifest = ModuleManifest(
     id="lyndrix.plugin.external_services",
     name="External Services",
-    version="1.3.0",
+    version="1.4.0",
     description="Embed external web services (Home Assistant, Grafana, …) via iframe.",
     author="Lyndrix",
     icon="public",
@@ -28,12 +31,55 @@ manifest = ModuleManifest(
     min_core_version="1.7.0",   # ctx.register_nav_entries (core API 1.9)
     auto_enable_on_install=True,
     repo_url="https://github.com/lyndrix-platform/lyndrix-plugin-external-services",
+    # NiceGUI engine only: hub page + sidebar link. The React shell ignores it.
     ui_route="/external",
+    # React shell: the plugin has NO sidebar tab of its own — the services it
+    # manages are the sidebar entries (ctx.register_nav_entries, group
+    # "Services"). Both routes are reachable without a tab: the settings page
+    # via the gear button on the Plugins page (settings_ui_route), the overview
+    # via the optional "Alle Dienste" nav entry (show_overview_in_nav).
+    react_ui=True,
+    i18n_namespace="external_services",
+    react_routes=[
+        {
+            "path": "/external/overview",
+            "label": "Alle Dienste",
+            "icon": "apps",
+            "sidebar_visible": False,
+        },
+        {
+            "path": "/external/settings",
+            "label": "Externe Dienste – Einstellungen",
+            "icon": "settings",
+            "sidebar_visible": False,
+        },
+    ],
+    settings_ui_route="/external/settings",
+    # Core settings dialog (Vault-backed). The service records themselves are
+    # edited on the React settings page, not here.
+    settings_schema=[
+        {
+            "key": OVERVIEW_SETTING_KEY,
+            "label": "Show 'All services' in the sidebar",
+            "kind": "bool",
+            "category": "Navigation",
+            "default": "false",
+            "description": "Adds an 'Alle Dienste' entry to the Services section that opens the "
+                           "overview of all enabled services inside the shell (core >= 1.10; "
+                           "older cores ignore the entry).",
+        },
+    ],
     permissions={
         # external_services:changed is cluster-bridged: every instance re-publishes
         # its (per-process) sidebar entries (ctx.register_nav_entries) when a peer
-        # changed a service.
-        "subscribe": ["db:connected", "external_services:register", "external_services:changed"],
+        # changed a service. plugin:settings_changed (core >= 1.5.1, bridged):
+        # the operator saved this plugin's settings — re-read show_overview_in_nav.
+        "subscribe": [
+            "db:connected",
+            "external_services:register",
+            "external_services:changed",
+            "plugin:settings_changed",
+        ],
         "emit": ["external_services:changed"],
     },
     # Identity & Permissions 2.0: role bundles. Permissions are fully
@@ -73,6 +119,20 @@ manifest = ModuleManifest(
 plugin_state: dict = {"ready": False}
 
 
+def settings_changed_for_us(payload) -> bool:
+    """``plugin:settings_changed`` payload ``{plugin_id, keys, by}`` concerns our setting?
+
+    A payload without a usable ``keys`` list is treated as "something changed"
+    so the setting is re-read rather than silently ignored.
+    """
+    if not isinstance(payload, dict) or payload.get("plugin_id") != manifest.id:
+        return False
+    keys = payload.get("keys")
+    if not isinstance(keys, list):
+        return True
+    return OVERVIEW_SETTING_KEY in keys
+
+
 async def render_overview_ui(ctx: ModuleContext) -> None:
     await _render_overview_ui(ctx)
 
@@ -100,6 +160,11 @@ def setup(ctx: ModuleContext) -> None:
     register_pages()
     _register_overview_page(ctx)
 
+    async def _apply_overview_setting(*, publish: bool = True) -> None:
+        # ctx.get_setting reads Vault synchronously — keep it off the loop.
+        enabled = await asyncio.to_thread(read_overview_setting, ctx)
+        set_overview_enabled(enabled, publish=publish)
+
     async def _bootstrap() -> None:
         # All DB work (table create + migration + read) is offloaded so it never
         # blocks the event loop. The DDL is bootstrap-locked and race-tolerant;
@@ -114,6 +179,8 @@ def setup(ctx: ModuleContext) -> None:
         except Exception as exc:
             ctx.log.error(f"External Services: could not load services: {exc}")
             return
+        # Record the flag first so register_all publishes the complete set once.
+        await _apply_overview_setting(publish=False)
         register_all(svcs)
         ctx.log.info(f"External Services: registered {len(svcs)} service(s).")
 
@@ -139,6 +206,16 @@ def setup(ctx: ModuleContext) -> None:
             ctx.log.warning(f"External Services: peer change not applied: {exc}")
             return
         resync(svcs)
+
+    @ctx.subscribe("plugin:settings_changed")
+    async def on_settings_changed(payload) -> None:
+        # Bridged topic: every instance (ours included) re-reads the Vault value.
+        if not settings_changed_for_us(payload):
+            return
+        try:
+            await _apply_overview_setting()
+        except Exception as exc:
+            ctx.log.warning(f"External Services: could not apply settings: {exc}")
 
     @ctx.subscribe("external_services:register")
     async def on_register(payload) -> None:
