@@ -35,7 +35,7 @@ import logging
 from typing import Dict, Iterable, Optional
 
 from ..model.models import ExternalService
-from .service import url_problem
+from .service import RESERVED_SLUGS, url_problem
 
 log = logging.getLogger("Plugin:ExternalServices:Routing")
 
@@ -105,6 +105,10 @@ def is_publishable(svc: ExternalService) -> bool:
     list; it is just never published.
     """
     if not (svc.enabled and svc.show_in_nav):
+        return False
+    # A pre-existing row with a reserved slug must not shadow the plugin's own
+    # "Alle Dienste" entry (new ones are rejected on write, ES-03).
+    if svc.slug in RESERVED_SLUGS:
         return False
     problem = url_problem(svc.url)
     if problem is None:

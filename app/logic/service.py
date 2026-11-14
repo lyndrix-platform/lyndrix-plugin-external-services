@@ -4,10 +4,14 @@ service.py — CRUD manager for ExternalService records.
 
 import logging
 import re
-from typing import List, Optional
+import time
+from contextlib import contextmanager
+from typing import Callable, List, Optional, TypeVar
 from urllib.parse import urlparse
 
 from contextlib import nullcontext
+
+from sqlalchemy.exc import IntegrityError
 
 from core.api import db_instance
 
@@ -21,6 +25,110 @@ log = logging.getLogger("Plugin:ExternalServices")
 _ALLOWED_URL_SCHEMES = ("http", "https")
 
 _TABLE = "external_services"
+
+T = TypeVar("T")
+
+# Column widths of the model. MariaDB (strict mode) answers an over-long value
+# with a DataError → HTTP 500; validating up front turns that into a clear 422.
+FIELD_LIMITS = {
+    "slug": 100,
+    "name": 100,
+    "description": 500,
+    "icon": 100,
+    "url": 1000,
+    "service_type": 50,
+    "open_mode": 20,
+}
+OPEN_MODES = ("iframe", "new_tab")
+
+# Slugs the plugin publishes itself. A service with one of these ids would
+# replace that sidebar entry (the core keeps the last duplicate id) — here the
+# "Alle Dienste" overview entry (routing.OVERVIEW_ENTRY_ID).
+RESERVED_SLUGS = frozenset({"all-services"})
+
+# MariaDB >= 11.6 (innodb_snapshot_isolation=ON) raises 1020 when a row changed
+# since the transaction's first read; 1205 = lock wait timeout, 1213 = deadlock.
+_RETRY_CODES = ("1020", "1205", "1213")
+
+
+class SlugConflict(ValueError):
+    """Another writer created the same slug at the same time (unique index)."""
+
+
+def _is_retryable(exc: Exception) -> bool:
+    return any(code in str(getattr(exc, "orig", exc)) for code in _RETRY_CODES)
+
+
+def retry_write(fn: Callable[[], T], *, attempts: int = 4, pause: float = 0.05) -> T:
+    """Run ``fn()`` — one complete short transaction — again on 1020/1205/1213.
+
+    ``fn`` must open its own session per attempt. Blocking (sleeps between
+    attempts): only call it from worker threads.
+    """
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except Exception as exc:
+            if attempt + 1 < attempts and _is_retryable(exc):
+                log.debug(f"DB: retrying write after {exc!s:.120}")
+                time.sleep(pause * (attempt + 1))
+                continue
+            raise
+    raise RuntimeError("unreachable")  # pragma: no cover
+
+
+@contextmanager
+def _write_session():
+    """A READ COMMITTED session (no-op on SQLite) that rolls back on error.
+
+    READ COMMITTED keeps a write next to a concurrent writer on another instance
+    from failing with 1020 more often than necessary; the remaining conflicts
+    are retried by :func:`retry_write`.
+    """
+    session = db_instance.SessionLocal()
+    try:
+        try:
+            bind = session.get_bind()
+            if bind is not None and bind.dialect.name in ("mysql", "mariadb"):
+                session.connection(execution_options={"isolation_level": "READ COMMITTED"})
+        except Exception as exc:  # isolation is an optimisation, never a reason to fail
+            log.debug(f"DB: READ COMMITTED not applied: {exc}")
+        yield session
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def validate_fields(**fields) -> None:
+    """Raise ``ValueError`` for a value that does not fit the model.
+
+    Shared by every write path (REST, bus topic, NiceGUI form). ``None`` values
+    are skipped so partial updates can pass their kwargs straight through.
+    """
+    for key, value in fields.items():
+        limit = FIELD_LIMITS.get(key)
+        if value is None or limit is None:
+            continue
+        if not isinstance(value, str):
+            raise ValueError(f"Invalid {key}: expected text")
+        if len(value) > limit:
+            raise ValueError(f"Invalid {key}: at most {limit} characters allowed (got {len(value)})")
+    open_mode = fields.get("open_mode")
+    if open_mode is not None and open_mode not in OPEN_MODES:
+        raise ValueError(f"Invalid open_mode {open_mode!r}: expected one of {', '.join(OPEN_MODES)}")
+    name = fields.get("name")
+    if name is not None and not name.strip():
+        raise ValueError("Invalid name: must not be empty")
+
+
+def validate_slug(slug: str) -> str:
+    """The slug as stored, or ``ValueError`` when it is reserved or too long."""
+    if slug in RESERVED_SLUGS:
+        raise ValueError(f"The slug {slug!r} is reserved by the plugin itself — choose another one")
+    validate_fields(slug=slug)
+    return slug
 # Columns added after the initial release: (name, DDL definition).
 _MIGRATIONS = (("open_mode", "VARCHAR(20) NOT NULL DEFAULT 'iframe'"),)
 
@@ -212,10 +320,40 @@ class ExternalServiceManager:
         description: str = "",
         enabled: bool = True,
     ) -> ExternalService:
-        """Create or update a service by slug (idempotent)."""
-        slug = _slugify(slug)
+        """Create or update a service by slug (idempotent).
+
+        Raises ``ValueError`` for invalid input and :class:`SlugConflict` when a
+        concurrent writer (another instance) created the same slug between our
+        lookup and our insert — the caller decides whether to report (REST: 409)
+        or to repeat the call, which then updates the peer's row (bus topic).
+        """
+        slug = validate_slug(_slugify(slug))
         url = validate_url(url)
-        with db_instance.SessionLocal() as s:
+        if not isinstance(name, str):
+            raise ValueError("Invalid name: expected text")
+        validate_fields(
+            name=name, url=url, icon=icon, service_type=service_type,
+            open_mode=open_mode, description=description,
+        )
+
+        def _tx() -> ExternalService:
+            try:
+                return self._upsert_tx(
+                    slug=slug, name=name, url=url, icon=icon, service_type=service_type,
+                    open_mode=open_mode, show_in_nav=show_in_nav,
+                    description=description, enabled=enabled,
+                )
+            except IntegrityError as exc:
+                raise SlugConflict(
+                    f"A service with the slug {slug!r} was created at the same time — retry to update it"
+                ) from exc
+
+        return retry_write(_tx)
+
+    def _upsert_tx(
+        self, *, slug, name, url, icon, service_type, open_mode, show_in_nav, description, enabled
+    ) -> ExternalService:
+        with _write_session() as s:
             existing = (
                 s.query(ExternalService).filter(ExternalService.slug == slug).first()
             )
@@ -264,18 +402,28 @@ class ExternalServiceManager:
 
         # The event-bus path is lenient: a malformed/empty URL is logged and
         # skipped rather than raised, so one bad payload can't crash the bus.
+        # The bus contract predates the strict field validation: an empty name
+        # or an unknown open_mode keeps falling back to a sane value instead of
+        # dropping the registration (the REST API answers 422 for those).
+        open_mode = payload.get("open_mode", "iframe")
+        fields = dict(
+            slug=slug,
+            name=str(payload.get("name") or slug),
+            url=payload.get("url", ""),
+            icon=payload.get("icon", "open_in_browser"),
+            service_type=payload.get("type", "iframe"),
+            open_mode=open_mode if open_mode in OPEN_MODES else "iframe",
+            show_in_nav=bool(payload.get("show_in_nav", True)),
+            description=payload.get("description", ""),
+            enabled=bool(payload.get("enabled", True)),
+        )
         try:
-            return self.upsert(
-                slug=slug,
-                name=payload.get("name", slug),
-                url=payload.get("url", ""),
-                icon=payload.get("icon", "open_in_browser"),
-                service_type=payload.get("type", "iframe"),
-                open_mode=payload.get("open_mode", "iframe"),
-                show_in_nav=bool(payload.get("show_in_nav", True)),
-                description=payload.get("description", ""),
-                enabled=bool(payload.get("enabled", True)),
-            )
+            try:
+                return self.upsert(**fields)
+            except SlugConflict:
+                # Two instances handled the same registration: the peer's row
+                # exists now, so the second pass is a plain update.
+                return self.upsert(**fields)
         except ValueError as exc:
             log.warning(f"external_services:register ignored invalid payload: {exc}")
             return None
@@ -285,33 +433,43 @@ class ExternalServiceManager:
         # create — the PUT route does not go through ``upsert``.
         if kwargs.get("url") is not None:
             kwargs["url"] = validate_url(kwargs["url"])
-        with db_instance.SessionLocal() as s:
-            svc = (
-                s.query(ExternalService)
-                .filter(ExternalService.id == service_id)
-                .first()
-            )
-            if not svc:
-                return False
-            for key, value in kwargs.items():
-                if hasattr(svc, key) and value is not None:
-                    setattr(svc, key, value)
-            s.commit()
-            return True
+        validate_fields(**kwargs)
+
+        def _tx() -> bool:
+            with _write_session() as s:
+                svc = (
+                    s.query(ExternalService)
+                    .filter(ExternalService.id == service_id)
+                    .first()
+                )
+                if not svc:
+                    return False
+                for key, value in kwargs.items():
+                    if hasattr(svc, key) and value is not None:
+                        setattr(svc, key, value)
+                s.commit()
+                return True
+
+        return retry_write(_tx)
 
     def delete(self, service_id: int) -> bool:
-        with db_instance.SessionLocal() as s:
-            svc = (
-                s.query(ExternalService)
-                .filter(ExternalService.id == service_id)
-                .first()
-            )
-            if not svc:
-                return False
-            s.delete(svc)
-            s.commit()
+        def _tx() -> bool:
+            with _write_session() as s:
+                svc = (
+                    s.query(ExternalService)
+                    .filter(ExternalService.id == service_id)
+                    .first()
+                )
+                if not svc:
+                    return False
+                s.delete(svc)
+                s.commit()
+                return True
+
+        deleted = retry_write(_tx)
+        if deleted:
             log.info(f"DELETE: Removed external service id={service_id}.")
-            return True
+        return deleted
 
 
 ext_service_manager = ExternalServiceManager()

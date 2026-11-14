@@ -408,3 +408,70 @@ def test_react_sources_guard_every_service_href():
     assert "export function isHttpUrl" in (react / "shared.tsx").read_text()
     for name in ("OverviewView.tsx", "SettingsView.tsx"):
         assert "hasSafeUrl(" in (react / name).read_text(), name
+
+
+# --- ES-03: write robustness -------------------------------------------------------
+
+def test_reserved_slug_matches_the_overview_entry_and_is_rejected(mgr):
+    assert routing.OVERVIEW_ENTRY_ID in service_mod.RESERVED_SLUGS
+    with pytest.raises(ValueError, match="reserved"):
+        mgr.upsert(slug="all-services", name="X", url="https://x.example.test/")
+    assert mgr.register_from_payload({"service": "all-services", "url": "https://x.example.test/"}) is None
+
+
+def test_legacy_row_with_reserved_slug_does_not_shadow_the_overview_entry(db, mgr, registry):
+    _, ctx = registry
+    _seed_legacy(db, "all-services", "https://x.example.test/")
+    routing.set_overview_enabled(True, publish=False)
+    routing.register_all(mgr.get_enabled())
+    assert [e["url"] for e in ctx.nav[-1] if e["id"] == "all-services"] == [routing.OVERVIEW_ROUTE]
+
+
+def test_over_long_fields_are_rejected_before_the_database(mgr):
+    with pytest.raises(ValueError, match="name"):
+        mgr.upsert(slug="a", name="n" * 101, url="https://a.example.test/")
+    svc = mgr.upsert(slug="a", name="A", url="https://a.example.test/")
+    with pytest.raises(ValueError, match="description"):
+        mgr.update(svc.id, description="d" * 501)
+    with pytest.raises(ValueError, match="open_mode"):
+        mgr.update(svc.id, open_mode="popup")
+
+
+def test_bus_registration_stays_lenient_and_survives_a_slug_race(mgr, monkeypatch):
+    # Unknown open_mode / missing name fall back instead of dropping the payload.
+    svc = mgr.register_from_payload({"service": "ha", "url": "https://ha.example.test/", "open_mode": "weird"})
+    assert (svc.name, svc.open_mode) == ("ha", "iframe")
+
+    # First pass loses the unique-slug race, the second one updates the peer's row.
+    real = mgr.upsert
+    calls = []
+
+    def _flaky(**fields):
+        calls.append(fields["slug"])
+        if len(calls) == 1:
+            raise service_mod.SlugConflict("lost the race")
+        return real(**fields)
+
+    monkeypatch.setattr(mgr, "upsert", _flaky)
+    again = mgr.register_from_payload({"service": "ha", "name": "Home Assistant", "url": "https://ha.example.test/"})
+    assert calls == ["ha", "ha"] and again.name == "Home Assistant"
+
+
+@pytest.mark.parametrize("code", ["1020", "1205", "1213"])
+def test_writes_are_retried_on_mariadb_conflicts(monkeypatch, code):
+    monkeypatch.setattr(service_mod.time, "sleep", lambda _s: None)
+    attempts = []
+
+    def _tx():
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise RuntimeError(f"({code}, 'Record has changed since last read')")
+        return "done"
+
+    assert service_mod.retry_write(_tx) == "done" and len(attempts) == 3
+
+    def _other():
+        raise RuntimeError("(1064, 'syntax')")
+
+    with pytest.raises(RuntimeError, match="1064"):
+        service_mod.retry_write(_other)

@@ -112,3 +112,64 @@ def test_list_flags_rows_with_an_invalid_stored_url(client_as, db, mgr):  # noqa
     rows = {r["slug"]: r for r in client_as(READ).get("/").json()}
     assert rows["legacy"]["url_valid"] is False
     assert rows["grafana"]["url_valid"] is True
+
+
+# --- ES-03: conflicts and invalid input are client errors, never a 500 --------------
+
+def test_lost_slug_race_is_a_409(client_as, db, mgr, monkeypatch):  # noqa: F811
+    """A peer inserts the same slug between our lookup and our insert."""
+    from sqlalchemy.orm import sessionmaker
+
+    engine, _ = db
+
+    def _racing_tx(self, **fields):
+        with sessionmaker(bind=engine)() as s:
+            s.add(ExternalService(slug=fields["slug"], name="Peer", url="https://peer.example.test/"))
+            s.commit()
+        with sessionmaker(bind=engine)() as s:   # our insert: the lookup saw nothing
+            s.add(ExternalService(slug=fields["slug"], name=fields["name"], url=fields["url"]))
+            s.commit()
+
+    monkeypatch.setattr(type(mgr), "_upsert_tx", _racing_tx)
+    reply = client_as(READ, MANAGE).post("/", json=_GRAFANA)
+
+    assert reply.status_code == 409
+    assert "grafana" in reply.json()["detail"]
+    assert mgr.get_by_slug("grafana").name == "Peer"
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"name": "n" * 101},
+        {"name": ""},
+        {"description": "d" * 501},
+        {"icon": "i" * 101},
+        {"url": "https://example.test/" + "u" * 1000},
+        {"type": "t" * 51},
+        {"open_mode": "popup"},
+        {"service": "s" * 101},
+        {"route": "all-services"},
+        {"service": "All Services"},      # slugifies to the reserved id
+    ],
+)
+def test_invalid_create_payload_is_a_422(client_as, mgr, patch):
+    reply = client_as(READ, MANAGE).post("/", json={**_GRAFANA, **patch})
+    assert reply.status_code == 422, reply.text
+    assert mgr.get_all() == []
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [{"name": "n" * 101}, {"description": "d" * 501}, {"open_mode": "popup"}, {"url": "javascript:alert(1)"}],
+)
+def test_invalid_update_payload_is_a_422(client_as, mgr, patch):
+    svc = mgr.upsert(slug="wiki", name="Wiki", url="https://wiki.example.test/")
+    assert client_as(READ, MANAGE).put(f"/{svc.id}", json=patch).status_code == 422
+    assert mgr.get_by_id(svc.id).name == "Wiki"
+
+
+def test_update_maps_type_to_the_service_type_column(client_as, mgr):
+    svc = mgr.upsert(slug="wiki", name="Wiki", url="https://wiki.example.test/")
+    assert client_as(READ, MANAGE).put(f"/{svc.id}", json={"type": "embed"}).status_code == 200
+    assert mgr.get_by_id(svc.id).service_type == "embed"

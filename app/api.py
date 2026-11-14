@@ -31,15 +31,23 @@ on the event loop. Every mutation is announced to peer instances
 import asyncio
 import logging
 import re
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from core.api import require_permission
 
 from .logic import routing
-from .logic.service import ext_service_manager, origin_key, url_problem, validate_url
+from .logic.service import (
+    FIELD_LIMITS,
+    SlugConflict,
+    ext_service_manager,
+    origin_key,
+    url_problem,
+    validate_slug,
+    validate_url,
+)
 from .model.models import ExternalService
 
 # Plugin-scoped permission ids. Gating routes on the fully-qualified
@@ -87,15 +95,17 @@ def _to_dict(svc: ExternalService) -> dict:
 class ServiceCreate(BaseModel):
     """Matches the payload format the IAC orchestrator (and others) send."""
 
-    service: str
-    name: str
-    icon: str = "open_in_browser"
-    url: str
-    type: str = "iframe"
-    route: Optional[str] = None
-    open_mode: str = "iframe"
+    # Limits mirror the column widths (FIELD_LIMITS): an over-long value is a
+    # 422 with the field name instead of a database error (ES-03).
+    service: str = Field(min_length=1, max_length=FIELD_LIMITS["slug"])
+    name: str = Field(min_length=1, max_length=FIELD_LIMITS["name"])
+    icon: str = Field(default="open_in_browser", max_length=FIELD_LIMITS["icon"])
+    url: str = Field(max_length=FIELD_LIMITS["url"])
+    type: str = Field(default="iframe", max_length=FIELD_LIMITS["service_type"])
+    route: Optional[str] = Field(default=None, max_length=FIELD_LIMITS["slug"])
+    open_mode: Literal["iframe", "new_tab"] = "iframe"
     show_in_nav: bool = True
-    description: str = ""
+    description: str = Field(default="", max_length=FIELD_LIMITS["description"])
     enabled: bool = True
 
     @field_validator("url")
@@ -105,12 +115,12 @@ class ServiceCreate(BaseModel):
 
 
 class ServiceUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    icon: Optional[str] = None
-    url: Optional[str] = None
-    type: Optional[str] = None
-    open_mode: Optional[str] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=FIELD_LIMITS["name"])
+    description: Optional[str] = Field(default=None, max_length=FIELD_LIMITS["description"])
+    icon: Optional[str] = Field(default=None, max_length=FIELD_LIMITS["icon"])
+    url: Optional[str] = Field(default=None, max_length=FIELD_LIMITS["url"])
+    type: Optional[str] = Field(default=None, max_length=FIELD_LIMITS["service_type"])
+    open_mode: Optional[Literal["iframe", "new_tab"]] = None
     show_in_nav: Optional[bool] = None
     enabled: Optional[bool] = None
 
@@ -160,7 +170,10 @@ def build_router() -> APIRouter:
     )
     async def create_service(data: ServiceCreate, request: Request):
         _reject_own_origin(data.url, request)
-        slug = _slugify(data.route or data.service)
+        try:
+            slug = validate_slug(_slugify(data.route or data.service))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         try:
             svc = await asyncio.to_thread(
                 ext_service_manager.upsert,
@@ -174,8 +187,12 @@ def build_router() -> APIRouter:
                 description=data.description,
                 enabled=data.enabled,
             )
+        except SlugConflict as exc:
+            # Lost the unique-slug race against another instance: a clean,
+            # retryable conflict instead of an IntegrityError → 500.
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         routing.refresh_service(svc)
         return _to_dict(svc)
@@ -186,11 +203,15 @@ def build_router() -> APIRouter:
     )
     async def update_service(service_id: int, data: ServiceUpdate, request: Request):
         _reject_own_origin(data.url, request)
-        updates = {k: v for k, v in data.dict().items() if v is not None}
+        updates = {k: v for k, v in data.model_dump().items() if v is not None}
+        if "type" in updates:
+            # The API field is "type", the column "service_type" — without the
+            # mapping a PUT silently dropped the value.
+            updates["service_type"] = updates.pop("type")
         try:
             updated = await asyncio.to_thread(ext_service_manager.update, service_id, **updates)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         if not updated:
             raise HTTPException(status_code=404, detail="Service not found")
 
