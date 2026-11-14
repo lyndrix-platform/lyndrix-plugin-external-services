@@ -217,6 +217,23 @@ export function PageHeader({ title, subtitle, actions }: { title: string; subtit
   )
 }
 
+/** True only for absolute http(s) URLs. Every href/iframe src built from a
+ *  service URL must pass this first: React does not block `javascript:` hrefs,
+ *  and a click would run in the Lyndrix origin (session token in localStorage). */
+export function isHttpUrl(url: unknown): url is string {
+  if (typeof url !== 'string') return false
+  try {
+    const u = new URL(url.trim())
+    return (u.protocol === 'http:' || u.protocol === 'https:') && !!u.host
+  } catch { return false }
+}
+
+/** Whether a service may be rendered as a link/frame: client check plus the
+ *  server's verdict (`url_valid`, absent on older plugin versions). */
+export function hasSafeUrl(svc: { url: string; url_valid?: boolean }): boolean {
+  return svc.url_valid !== false && isHttpUrl(svc.url)
+}
+
 /** Host of a URL for compact display; falls back to the raw string. */
 export function hostOf(url: string): string {
   try { return new URL(url).host } catch { return url }

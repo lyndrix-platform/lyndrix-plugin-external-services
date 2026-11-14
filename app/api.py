@@ -39,7 +39,7 @@ from pydantic import BaseModel, field_validator
 from core.api import require_permission
 
 from .logic import routing
-from .logic.service import ext_service_manager, origin_key, validate_url
+from .logic.service import ext_service_manager, origin_key, url_problem, validate_url
 from .model.models import ExternalService
 
 # Plugin-scoped permission ids. Gating routes on the fully-qualified
@@ -73,6 +73,9 @@ def _to_dict(svc: ExternalService) -> dict:
         "description": svc.description,
         "icon": svc.icon,
         "url": svc.url,
+        # False for a legacy row whose stored URL fails today's validation: it
+        # is not published and clients must not render it as a link (ES-02).
+        "url_valid": url_problem(svc.url) is None,
         "type": svc.service_type,
         "open_mode": getattr(svc, "open_mode", "iframe") or "iframe",
         "show_in_nav": svc.show_in_nav,

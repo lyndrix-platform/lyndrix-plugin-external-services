@@ -35,6 +35,7 @@ import logging
 from typing import Dict, Iterable, Optional
 
 from ..model.models import ExternalService
+from .service import url_problem
 
 log = logging.getLogger("Plugin:ExternalServices:Routing")
 
@@ -57,6 +58,9 @@ _entries: Dict[str, dict] = {}
 # Whether the extra "Alle Dienste" entry is published (plugin setting).
 _overview_enabled = False
 _api_warned = False
+# slug → URL already reported as invalid, so a legacy row is logged once and
+# not on every resync.
+_invalid_reported: Dict[str, str] = {}
 
 
 def set_context(ctx: object) -> None:
@@ -69,6 +73,7 @@ def set_context(ctx: object) -> None:
     except RuntimeError:
         _loop = None
     _entries.clear()
+    _invalid_reported.clear()
     _overview_enabled = False  # re-read from the plugin settings at bootstrap
 
 
@@ -89,6 +94,26 @@ def announce(action: str, slug: Optional[str] = None) -> None:
             emit(CHANGED_TOPIC, payload)
     except Exception as exc:  # a lost announcement must never fail the write
         log.warning(f"NAV: could not announce '{action}' for '{slug}': {exc}")
+
+
+def is_publishable(svc: ExternalService) -> bool:
+    """Whether ``svc`` may get a sidebar entry: enabled, listed, and a valid URL.
+
+    The URL is validated again here — at registration time, not only on write —
+    because the table can hold rows that predate the write-side validation
+    (audit ES-02). An invalid row stays in the DB and is flagged in the admin
+    list; it is just never published.
+    """
+    if not (svc.enabled and svc.show_in_nav):
+        return False
+    problem = url_problem(svc.url)
+    if problem is None:
+        _invalid_reported.pop(svc.slug, None)
+        return True
+    if _invalid_reported.get(svc.slug) != svc.url:
+        _invalid_reported[svc.slug] = svc.url
+        log.warning(f"NAV: service '{svc.slug}' is not published — {problem}")
+    return False
 
 
 def nav_entry(svc: ExternalService) -> dict:
@@ -200,7 +225,7 @@ def resync(services: Iterable[ExternalService]) -> None:
     """
     _entries.clear()
     for svc in services:
-        if svc.enabled and svc.show_in_nav:
+        if is_publishable(svc):
             _entries[svc.slug] = nav_entry(svc)
     _publish()
     log.info(f"NAV: {len(_entries)} sidebar entr{'y' if len(_entries) == 1 else 'ies'} published.")
@@ -213,7 +238,7 @@ def register_all(services: Iterable[ExternalService]) -> None:
 
 def register_service(svc: ExternalService) -> None:
     """Publish a single service's sidebar entry (idempotent)."""
-    if svc.enabled and svc.show_in_nav:
+    if is_publishable(svc):
         _entries[svc.slug] = nav_entry(svc)
     else:
         _entries.pop(svc.slug, None)

@@ -30,7 +30,9 @@
     "modeIframe": "eingebettet",
     "modeNewTab": "neuer Tab",
     "active": "aktiv",
-    "inactive": "inaktiv"
+    "inactive": "inaktiv",
+    "urlInvalid": "ungültige URL",
+    "urlInvalidHint": "Diese URL ist keine gültige http(s)-Adresse. Der Dienst wird erst nach der Korrektur in der Sidebar veröffentlicht."
   },
   "form": {
     "titleCreate": "Neuer externer Dienst",

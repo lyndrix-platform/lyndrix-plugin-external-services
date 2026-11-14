@@ -4,7 +4,7 @@ import { externalServicesApi, spaNavigate } from './lib/api'
 import type { ExternalServiceOut } from './lib/api'
 import {
   Button, EmptyState, ErrorBox, Icon, PageHeader, Spinner,
-  extFramePath, goSettings, hostOf, useLocation,
+  extFramePath, goSettings, hasSafeUrl, hostOf, useLocation,
 } from './shared'
 
 // Same sandbox the NiceGUI page uses (app/ui/nicegui/pages.py). The embedded
@@ -103,7 +103,10 @@ export default function OverviewView() {
 
   const load = useCallback(async () => {
     try {
-      setServices((await externalServicesApi.list()).filter((s) => s.enabled))
+      // Services with an invalid (legacy, non-http(s)) URL are left out: the
+      // overview only offers things that are safe to open. Admins see them
+      // flagged on the settings page.
+      setServices((await externalServicesApi.list()).filter((s) => s.enabled && hasSafeUrl(s)))
       setError(null)
     } catch (err) {
       setError(`${t('msg.loadFailed', { defaultValue: 'Could not load services' })}: ${(err as Error).message}`)

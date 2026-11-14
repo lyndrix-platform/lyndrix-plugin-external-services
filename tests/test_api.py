@@ -99,3 +99,16 @@ def test_url_on_the_lyndrix_origin_is_rejected(client_as, mgr, headers):
     assert repoint.status_code == 422
     # Another port on the same host is a different origin and stays allowed.
     assert client.put(f"/{other.json()['id']}", json={"url": "https://lyndrix.example.test:3000/"}).status_code == 200
+
+
+# --- ES-02: legacy rows are flagged, not hidden, in the admin list ------------------
+
+def test_list_flags_rows_with_an_invalid_stored_url(client_as, db, mgr):  # noqa: F811
+    from .test_service import _seed_legacy
+
+    _seed_legacy(db, "legacy", "javascript:alert(1)")
+    mgr.upsert(slug="grafana", name="Grafana", url="https://grafana.example.test/")
+
+    rows = {r["slug"]: r for r in client_as(READ).get("/").json()}
+    assert rows["legacy"]["url_valid"] is False
+    assert rows["grafana"]["url_valid"] is True

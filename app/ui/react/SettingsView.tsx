@@ -5,7 +5,7 @@ import type { ExternalServiceOut } from './lib/api'
 import ServiceDialog from './ServiceDialog'
 import {
   Button, EmptyState, ErrorBox, Icon, IconButton, Modal, NoticeBox, PageHeader, Spinner,
-  goOverview, hostOf, useCanWrite, useNotice,
+  goOverview, hasSafeUrl, hostOf, useCanWrite, useNotice,
 } from './shared'
 
 type Dialog = { kind: 'none' } | { kind: 'create' } | { kind: 'edit'; svc: ExternalServiceOut } | { kind: 'delete'; svc: ExternalServiceOut }
@@ -136,11 +136,22 @@ export default function SettingsView() {
                       </div>
                     </td>
                     <td>
-                      <a href={s.url} target="_blank" rel="noreferrer" title={s.url}
-                        style={{ color: 'var(--lx-text)', fontFamily: 'var(--lx-font-mono)', fontSize: '0.75rem', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                        {hostOf(s.url)}
-                        <Icon name="open_in_new" size={13} style={{ color: 'var(--lx-text-muted)' }} />
-                      </a>
+                      {hasSafeUrl(s) ? (
+                        <a href={s.url} target="_blank" rel="noreferrer" title={s.url}
+                          style={{ color: 'var(--lx-text)', fontFamily: 'var(--lx-font-mono)', fontSize: '0.75rem', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          {hostOf(s.url)}
+                          <Icon name="open_in_new" size={13} style={{ color: 'var(--lx-text-muted)' }} />
+                        </a>
+                      ) : (
+                        // Legacy row with a non-http(s) URL: shown as inert text, never as a link.
+                        <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 4 }}>
+                          <span className="lx-badge lx-badge--down" title={t('settings.urlInvalidHint', { defaultValue: 'This URL is not a valid http(s) address. The service is not published in the sidebar until the URL is corrected.' })}>
+                            <Icon name="warning" size={13} />
+                            {t('settings.urlInvalid', { defaultValue: 'invalid URL' })}
+                          </span>
+                          <span style={{ fontFamily: 'var(--lx-font-mono)', fontSize: '0.7rem', color: 'var(--lx-text-muted)', wordBreak: 'break-all' }}>{s.url}</span>
+                        </span>
+                      )}
                     </td>
                     <td>
                       <span className="lx-badge lx-badge--muted">

@@ -73,6 +73,21 @@ def validate_url(url: str) -> str:
     return candidate
 
 
+def url_problem(url: Optional[str]) -> Optional[str]:
+    """Why a *stored* URL must not be rendered or published — ``None`` when fine.
+
+    Rows written before the 0.2.0 fix (anonymous API, no validation) can still
+    carry ``javascript:`` or other non-web URLs. They are never rewritten here:
+    read paths call this to keep such a row out of the sidebar, out of every
+    link/iframe, and flagged in the admin list until an admin corrects it.
+    """
+    try:
+        validate_url(url or "")
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
 def origin_key(url: str) -> Optional[str]:
     """``host[:port]`` of an http(s) URL with the default ports folded away.
 

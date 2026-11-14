@@ -23,6 +23,9 @@ export interface ExternalServiceOut {
   description: string
   icon: string
   url: string
+  /** false → the stored URL fails server-side validation (legacy row): not in
+   *  the sidebar, must not be rendered as a link. Absent on plugin < 1.4.1. */
+  url_valid?: boolean
   type: string
   open_mode: OpenMode
   show_in_nav: boolean

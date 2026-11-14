@@ -30,7 +30,9 @@
     "modeIframe": "embedded",
     "modeNewTab": "new tab",
     "active": "active",
-    "inactive": "inactive"
+    "inactive": "inactive",
+    "urlInvalid": "invalid URL",
+    "urlInvalidHint": "This URL is not a valid http(s) address. The service is not published in the sidebar until the URL is corrected."
   },
   "form": {
     "titleCreate": "New external service",

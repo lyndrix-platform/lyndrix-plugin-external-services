@@ -356,3 +356,55 @@ def test_react_bundle_is_committed_with_the_shell_global():
     bundle = _REPO / "app" / "ui" / "static" / "ui_bundle.js"
     assert bundle.exists(), "run `npm run build` — the core serves app/ui/static/ui_bundle.js"
     assert "__lyndrix_plugin_lyndrix_plugin_external_services" in bundle.read_text("utf-8")
+
+
+# --- ES-02: stored URLs are re-validated when entries are registered ---------------
+
+def _seed_legacy(db, slug, url, **cols):
+    """Insert a row the way a pre-0.2.0 release could: bypassing validate_url."""
+    engine, _ = db
+    with sessionmaker(bind=engine)() as s:
+        s.add(ExternalService(slug=slug, name=slug.title(), url=url, **cols))
+        s.commit()
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["javascript:alert(1)", "data:text/html,<script>1</script>", "//evil.example.test/x",
+     "https://user:pw@evil.example.test/", "ftp://files.example.test/", ""],
+)
+def test_legacy_invalid_url_is_never_published(db, mgr, registry, url):
+    _, ctx = registry
+    _seed_legacy(db, "legacy", url)
+    mgr.upsert(slug="grafana", name="Grafana", url="https://grafana.example.test/")
+
+    routing.register_all(mgr.get_enabled())          # bootstrap path
+    assert ctx.published == ["grafana"]
+
+    routing.refresh_service(mgr.get_by_slug("legacy"))  # single-service path
+    assert ctx.published == ["grafana"]
+    assert all(e["url"].startswith("https://") for e in ctx.nav[-1])
+
+    # The row itself is untouched — an admin corrects it, nothing is rewritten.
+    assert mgr.get_by_slug("legacy").url == url
+    assert service_mod.url_problem(url) is not None
+
+
+def test_corrected_legacy_row_is_published_again(db, mgr, registry):
+    _, ctx = registry
+    _seed_legacy(db, "legacy", "javascript:alert(1)")
+    routing.register_all(mgr.get_enabled())
+    assert ctx.published == []
+
+    mgr.update(mgr.get_by_slug("legacy").id, url="https://ok.example.test/")
+    routing.refresh_service(mgr.get_by_slug("legacy"))
+    assert ctx.published == ["legacy"]
+
+
+def test_react_sources_guard_every_service_href():
+    """Source-level guard (the bundle is rebuilt separately): no service URL
+    reaches an href/src that is not behind the http(s) check."""
+    react = _REPO / "app" / "ui" / "react"
+    assert "export function isHttpUrl" in (react / "shared.tsx").read_text()
+    for name in ("OverviewView.tsx", "SettingsView.tsx"):
+        assert "hasSafeUrl(" in (react / name).read_text(), name
