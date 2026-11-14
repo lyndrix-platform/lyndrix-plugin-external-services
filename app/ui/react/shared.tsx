@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { externalServicesApi, PLUGIN_ID, SHELL_PLUGIN_ID, spaNavigate } from './lib/api'
+import { externalServicesApi, PERM_MANAGE, SHELL_PLUGIN_ID, spaNavigate } from './lib/api'
 
 // Small presentational pieces + navigation helpers shared by both pages.
 // Everything renders into the host DOM, so the host's .lx-* classes and
@@ -36,8 +36,10 @@ export const extFramePath = (slug: string) => `/ext/${SHELL_PLUGIN_ID}/${encodeU
 
 // ─── Permissions ────────────────────────────────────────────────────────────
 
-/** Whether the caller may create/edit/delete (plugin:<id>:api:write or global
- *  api:write). Display hygiene only — the API enforces regardless; unknown → true. */
+/** Whether the caller may create/edit/delete: the dedicated
+ *  plugin:<id>:external_services:manage permission (the generic api:write is not
+ *  enough since ES-01). Display hygiene only — the API enforces regardless;
+ *  unknown → true. */
 export function useCanWrite(): boolean {
   const [canWrite, setCanWrite] = useState(true)
   useEffect(() => {
@@ -45,8 +47,7 @@ export function useCanWrite(): boolean {
     externalServicesApi.access()
       .then((a) => {
         if (!alive) return
-        const p = a.plugins?.[PLUGIN_ID]
-        setCanWrite(a.is_superadmin || !p || p.can_write)
+        setCanWrite(a.is_superadmin || !Array.isArray(a.permissions) || a.permissions.includes(PERM_MANAGE))
       })
       .catch(() => { /* keep optimistic default; API still gates writes */ })
     return () => { alive = false }

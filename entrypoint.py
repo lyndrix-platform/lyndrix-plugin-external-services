@@ -85,6 +85,20 @@ manifest = ModuleManifest(
     # Identity & Permissions 2.0: role bundles. Permissions are fully
     # qualified (plugin:<id>:api:*) rather than the bare "api:read"/"api:write"
     # globals, so granting these roles only affects this plugin.
+    #
+    # external_services:manage gates every write to a service record. The core
+    # hands "…:api:write" to every INT_USER with no opt-out, which is too wide
+    # for entries that all users (admins included) open as trusted sidebar
+    # links; a custom id without the ":api:write" suffix gets no such baseline
+    # grant and no global fallback (audit ES-01).
+    custom_permissions=[
+        {
+            "id": "external_services:manage",
+            "label": "Manage external services",
+            "description": "Create, repoint and delete the embedded services every user sees in the sidebar",
+            "icon": "public",
+        },
+    ],
     roles=[
         {
             "id": "viewer",
@@ -101,7 +115,7 @@ manifest = ModuleManifest(
                 "plugin:lyndrix.plugin.external_services:api:write",
             ],
             "auto_map_groups": [],
-            "description": "Manage embedded external service entries.",
+            "description": "Reload the sidebar entries; cannot create or repoint services.",
         },
         {
             "id": "admin",
@@ -109,6 +123,7 @@ manifest = ModuleManifest(
             "permissions": [
                 "plugin:lyndrix.plugin.external_services:api:read",
                 "plugin:lyndrix.plugin.external_services:api:write",
+                "plugin:lyndrix.plugin.external_services:external_services:manage",
             ],
             "auto_map_groups": ["INT_ADMIN"],
             "description": "Full control over external service configuration.",

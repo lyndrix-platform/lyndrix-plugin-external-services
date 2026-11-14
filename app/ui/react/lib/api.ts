@@ -7,6 +7,8 @@
 export const PLUGIN_ID = 'lyndrix.plugin.external_services'
 /** Shell-side URL-safe id ("." → "-"): /apps/<id>/… plugin routes, /ext/<id>/… embeds. */
 export const SHELL_PLUGIN_ID = 'lyndrix-plugin-external_services'
+/** Custom permission gating create/update/delete (mirrors app/api.py PERM_MANAGE). */
+export const PERM_MANAGE = `plugin:${PLUGIN_ID}:external_services:manage`
 const TOKEN_KEY = 'lyndrix_token'
 const REQUEST_TIMEOUT_MS = 15_000
 
@@ -51,6 +53,8 @@ export type ServiceUpdate = Partial<
 /** Core: GET /api/me/access — server-derived effective permissions. */
 export interface AccessView {
   is_superadmin: boolean
+  /** Effective permission ids of the caller. */
+  permissions?: string[]
   plugins: Record<string, { visible: boolean; can_read: boolean; can_write: boolean; routes: string[] }>
 }
 

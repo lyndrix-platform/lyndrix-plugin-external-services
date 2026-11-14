@@ -73,6 +73,23 @@ def validate_url(url: str) -> str:
     return candidate
 
 
+def origin_key(url: str) -> Optional[str]:
+    """``host[:port]`` of an http(s) URL with the default ports folded away.
+
+    The scheme is deliberately ignored: ``http://lyndrix`` usually redirects to
+    ``https://lyndrix``, so both count as the same place for the "do not embed
+    Lyndrix in itself" check. ``None`` for anything that is not an http(s) URL.
+    """
+    try:
+        parsed = urlparse((url or "").strip())
+        host, port = parsed.hostname, parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in _ALLOWED_URL_SCHEMES or not host:
+        return None
+    return host.lower() if port in (None, 80, 443) else f"{host.lower()}:{port}"
+
+
 class ExternalServiceManager:
 
     def ensure_table(self) -> None:

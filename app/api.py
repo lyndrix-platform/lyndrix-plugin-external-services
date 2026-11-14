@@ -4,9 +4,11 @@ api.py — FastAPI REST endpoints for External Services CRUD.
 The router is mounted by core via ``ctx.register_routes()`` under
 ``/api/plugins/lyndrix.plugin.external_services/``. The router registry enforces
 authentication on every route automatically; we additionally require
-``api:read`` on reads and ``api:write`` on every mutation, so neither an
-anonymous nor a merely-authenticated caller can create/edit/delete embedded
-services (these register live NiceGUI pages + sidebar entries).
+``api:read`` on reads and the dedicated ``external_services:manage`` permission
+on every mutation of a service record. The core grants ``…:api:write`` to every
+INT_USER (and lets the global ``api:write`` satisfy it), so it cannot protect
+entries that *all* users open as trusted sidebar links — ``manage`` has no such
+fallback and is mapped to the plugin's admin role only (audit ES-01).
 
 Endpoints (relative to the mount prefix above):
   GET    /            — list all
@@ -31,13 +33,13 @@ import logging
 import re
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
 from core.api import require_permission
 
 from .logic import routing
-from .logic.service import ext_service_manager, validate_url
+from .logic.service import ext_service_manager, origin_key, validate_url
 from .model.models import ExternalService
 
 # Plugin-scoped permission ids. Gating routes on the fully-qualified
@@ -47,6 +49,11 @@ from .model.models import ExternalService
 PLUGIN_ID = "lyndrix.plugin.external_services"
 PERM_READ = f"plugin:{PLUGIN_ID}:api:read"
 PERM_WRITE = f"plugin:{PLUGIN_ID}:api:write"
+# Creating/repointing/deleting a service changes where a sidebar entry that every
+# user trusts leads to. The id must NOT end in ``:api:read``/``:api:write``:
+# only then the core's baseline grants and the global api:write fallback do not
+# satisfy it. Declared in the manifest (``custom_permissions``).
+PERM_MANAGE = f"plugin:{PLUGIN_ID}:external_services:manage"
 
 log = logging.getLogger("Plugin:ExternalServices:API")
 
@@ -110,6 +117,32 @@ class ServiceUpdate(BaseModel):
         return validate_url(v) if v is not None else v
 
 
+def _own_origins(request: Request) -> set:
+    """Host[:port] keys under which the caller reached Lyndrix itself.
+
+    A service URL on the Lyndrix origin would be framed same-origin by the shell
+    (full access to the session token), so the write routes refuse it. The core
+    has no configured public URL; the browser's ``Origin`` and the (forwarded)
+    ``Host`` of this very request are the best available evidence.
+    """
+    headers = request.headers
+    proto = (headers.get("x-forwarded-proto") or request.url.scheme or "http").split(",")[0].strip()
+    candidates = [headers.get("origin") or ""]
+    for name in ("x-forwarded-host", "host"):
+        for host in (headers.get(name) or "").split(","):
+            if host.strip():
+                candidates.append(f"{proto}://{host.strip()}")
+    return {key for key in (origin_key(c) for c in candidates) if key}
+
+
+def _reject_own_origin(url: Optional[str], request: Request) -> None:
+    if url is not None and origin_key(url) in _own_origins(request):
+        raise HTTPException(
+            status_code=422,
+            detail="The service URL must not point at Lyndrix itself (same origin as this request).",
+        )
+
+
 def build_router() -> APIRouter:
     router = APIRouter(tags=["External Services"])
 
@@ -120,9 +153,10 @@ def build_router() -> APIRouter:
     @router.post(
         "/",
         status_code=201,
-        dependencies=[Depends(require_permission(PERM_WRITE))],
+        dependencies=[Depends(require_permission(PERM_MANAGE))],
     )
-    async def create_service(data: ServiceCreate):
+    async def create_service(data: ServiceCreate, request: Request):
+        _reject_own_origin(data.url, request)
         slug = _slugify(data.route or data.service)
         try:
             svc = await asyncio.to_thread(
@@ -145,9 +179,10 @@ def build_router() -> APIRouter:
 
     @router.put(
         "/{service_id}",
-        dependencies=[Depends(require_permission(PERM_WRITE))],
+        dependencies=[Depends(require_permission(PERM_MANAGE))],
     )
-    async def update_service(service_id: int, data: ServiceUpdate):
+    async def update_service(service_id: int, data: ServiceUpdate, request: Request):
+        _reject_own_origin(data.url, request)
         updates = {k: v for k, v in data.dict().items() if v is not None}
         try:
             updated = await asyncio.to_thread(ext_service_manager.update, service_id, **updates)
@@ -163,7 +198,7 @@ def build_router() -> APIRouter:
 
     @router.delete(
         "/{service_id}",
-        dependencies=[Depends(require_permission(PERM_WRITE))],
+        dependencies=[Depends(require_permission(PERM_MANAGE))],
     )
     async def delete_service(service_id: int):
         svc = await asyncio.to_thread(ext_service_manager.get_by_id, service_id)
