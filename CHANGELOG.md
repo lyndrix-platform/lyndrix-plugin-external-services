@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+Proposed version: **1.5.0** (security audit 2026-11; the manifest version is not bumped yet). Minimum core unchanged.
+React bundle rebuild needed. **Before the rollout:** only the admin role holds the new `external_services:manage`
+permission — grant it to whoever maintains the service list. Recommended read-only check in prod:
+`SELECT id, url FROM external_services WHERE url NOT LIKE 'http%'`.
+
+### Security
+- Creating, changing and deleting a service requires the new custom permission `external_services:manage` (admin role);
+  the core's baseline `api:write` grant no longer allows it. A URL on the origin the request arrived on is refused
+  (it would be framed same-origin with the shell). `GET /` stays `api:read` (ES-01).
+- Stored URLs are validated again before they are published or rendered: an invalid row gets no sidebar entry, the API
+  marks it with `url_valid: false`, and the React and NiceGUI UIs render it as inert text (ES-02).
+
+### Fixed
+- A lost unique-slug race is HTTP 409 instead of 500 (the bus topic repeats the call); fields longer than their columns
+  and an `open_mode` other than `iframe`/`new_tab` are 422; the slug `all-services` is reserved; writes run as short
+  READ COMMITTED transactions retried on 1020/1205/1213 (ES-03).
+- `PUT {"type": …}` is stored (it was silently dropped).
+
+### Changed
+- Service-level validation errors are 422 instead of 400.
+
 ## [1.4.0] - 2026-10-16
 ### Added
 - **React UI** for the React shell (`react_ui=True`, Vite IIFE bundle at
