@@ -321,7 +321,7 @@ def test_manifest_react_ui_has_no_sidebar_tab():
     from ext_plugin import entrypoint
 
     m = entrypoint.manifest
-    assert m.version == "1.4.0"
+    assert m.version == "1.5.0"
     assert m.react_ui is True and m.i18n_namespace == "external_services"
     paths = [r["path"] for r in m.react_routes]
     assert sorted(paths) == ["/external/overview", "/external/settings"]
