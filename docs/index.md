@@ -7,9 +7,11 @@ Embed external web services (Home Assistant, Grafana, Netdata, …) directly int
 
 ## Features
 
-- iframe-based embedding of external services
-- Managed service registry with DB persistence
-- Event-driven service registration
+- iframe-based embedding of external services (or new-tab links for services that forbid embedding)
+- One sidebar entry per service in the *Services* section — the plugin has no tab of its own
+- React settings page (create / edit / delete / reload) and a tile overview of all active services
+- Managed service registry with DB persistence, cluster-aware sidebar sync
+- REST API and event-driven service registration
 
 ## Installation
 

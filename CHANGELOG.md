@@ -5,6 +5,105 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-11-15
+Security audit 2026-11. Minimum core unchanged.
+React bundle rebuild needed. **Before the rollout:** only the admin role holds the new `external_services:manage`
+permission — grant it to whoever maintains the service list. Recommended read-only check in prod:
+`SELECT id, url FROM external_services WHERE url NOT LIKE 'http%'`.
+
+### Security
+- Creating, changing and deleting a service requires the new custom permission `external_services:manage` (admin role);
+  the core's baseline `api:write` grant no longer allows it. A URL on the origin the request arrived on is refused
+  (it would be framed same-origin with the shell). `GET /` stays `api:read` (ES-01).
+- Stored URLs are validated again before they are published or rendered: an invalid row gets no sidebar entry, the API
+  marks it with `url_valid: false`, and the React and NiceGUI UIs render it as inert text (ES-02).
+
+### Fixed
+- A lost unique-slug race is HTTP 409 instead of 500 (the bus topic repeats the call); fields longer than their columns
+  and an `open_mode` other than `iframe`/`new_tab` are 422; the slug `all-services` is reserved; writes run as short
+  READ COMMITTED transactions retried on 1020/1205/1213 (ES-03).
+- `PUT {"type": …}` is stored (it was silently dropped).
+
+### Changed
+- Service-level validation errors are 422 instead of 400.
+
+## [1.4.0] - 2026-10-16
+### Added
+- **React UI** for the React shell (`react_ui=True`, Vite IIFE bundle at
+  `app/ui/static/ui_bundle.js`, i18n namespace `external_services` with
+  `locales/external_services.{en,de}.json` — English is the source of truth):
+  - `/apps/lyndrix-plugin-external_services/external/settings` — the plugin's
+    settings page (`settings_ui_route`; the gear button on the Plugins page
+    opens it). Table of every service with a create/edit dialog (name, slug,
+    URL, description, Material icon with live preview, open mode, "show in
+    sidebar", "active"), delete with confirmation, a *Reload* action
+    (`POST /reload`) and success/error feedback. Write controls are hidden for
+    callers without the plugin write permission (the API enforces regardless).
+  - `/apps/lyndrix-plugin-external_services/external/overview` — tile grid of
+    every enabled service. Embedded services with a sidebar entry open through
+    the shell's frame page (`/ext/lyndrix-plugin-external_services/<slug>`),
+    embedded services hidden from the sidebar are framed by the overview itself
+    (`?open=<slug>`), `new_tab` services open in a new browser tab.
+- Plugin setting **`show_overview_in_nav`** (bool, default `false`, core
+  settings dialog). When enabled, the plugin publishes one extra sidebar entry
+  `all-services` (*Alle Dienste*, group *Services*, `order: -1`) that opens the
+  overview in-shell via `open_mode: "route"` (core API 1.10). Older cores
+  reject that mode and skip just this entry with a warning — the per-service
+  entries are unaffected. Re-evaluated at bootstrap (`ctx.get_setting`,
+  getattr-guarded) and on `plugin:settings_changed` on every instance.
+
+### Changed
+- The plugin has **no sidebar tab of its own** any more: both React routes are
+  `sidebar_visible: false`. The services it manages are the sidebar entries
+  (group *Services*). `ui_route="/external"` stays for the NiceGUI engine only.
+- `.gitignore` repaired (it was committed with unresolved merge-conflict
+  markers) and now ignores `node_modules/`.
+
+### Notes
+- The UI uses the existing REST API only; no API changes.
+- Build: `npm install && npm run build` (React, react-i18next and i18next are
+  provided by the shell and externalized), type-check with `npm run typecheck`.
+  The built bundle is committed.
+
+## [1.3.0] - 2026-10-15
+### Fixed
+- Sidebar entries finally appear: the plugin now publishes one navigation entry per enabled service through the sanctioned core API `ctx.register_nav_entries()` (core ≥ 1.7 / API 1.9). Up to 1.2.0 it injected virtual manifests through a `core.api.module_manager` export that never existed, so no entry was ever shown — and the virtual entries would have polluted the cluster's plugin fingerprint (`plugin_artifacts` preflight check).
+
+### Changed
+- The React shell lists the services under *Services* and opens them embedded at `/ext/<plugin>/<slug>` (`open_mode: iframe`) or in a new tab (`open_mode: new_tab`); the NiceGUI page `/external/{slug}` is unchanged.
+- `min_core_version` is 1.7.0. On an older core the plugin still loads and serves its API, but logs one warning and shows no sidebar entries.
+
+## [1.2.0] - 2026-10-15
+### Fixed
+- `health()` no longer runs DDL (`create_all` + `ALTER TABLE`) on every poll; it
+  issues a single `COUNT` query (`ext_service_manager.count()`).
+- Cluster-safe schema bootstrap: `ensure_table()` creates only this plugin's
+  table (`checkfirst=True`), uses `ADD COLUMN IF NOT EXISTS` on MariaDB, runs
+  under `db_instance.advisory_lock("lyndrix_bootstrap")` (getattr-guarded) and
+  treats MariaDB 1050/1060 as "a peer did it". A failed or lost bootstrap never
+  skips `register_all`.
+- The bootstrap now also runs when the plugin is activated after
+  `db:connected` already fired (the normal boot order) — before, the table was
+  only created as a side effect of the health probe and the nav entries were
+  not registered at boot.
+
+### Changed
+- Sidebar entries are per process; every create/update/delete/register (REST,
+  NiceGUI, `external_services:register`) and `POST /reload` is announced as
+  `external_services:changed` with `cluster=True`. Peers re-read the enabled
+  services from the database and rebuild their entries (removed/disabled slugs
+  disappear). `POST /reload` now also drops stale entries.
+- Mutating REST handlers are `async`: DB work runs in `asyncio.to_thread`, the
+  in-memory registry is only mutated on the event loop.
+- Services pushed via `external_services:register` are refreshed (not only
+  added), so a renamed service updates its sidebar entry.
+
+### Known issues
+- `core.api` does not export `module_manager`, so sidebar injection logs
+  "NAV: Could not inject sidebar entry" and the per-service nav entries do not
+  appear (pre-existing; the `/external/<slug>` pages work). Needs a core API
+  for virtual nav entries.
+
 ## [0.2.0] - 2026-06-27
 ### Security
 - **Critical**: closed the anonymous REST API. The router is now mounted by core

@@ -19,7 +19,7 @@ from nicegui import ui
 
 from core.api import UIStyles
 
-from ...logic.service import ext_service_manager
+from ...logic.service import ext_service_manager, url_problem
 
 log = logging.getLogger("Plugin:ExternalServices:Pages")
 
@@ -49,7 +49,8 @@ def register_pages() -> None:
     async def _external_service_page(slug: str) -> None:
         # Resolve at request time so enable/disable/edit/delete are live.
         svc = await asyncio.to_thread(ext_service_manager.get_by_slug, slug)
-        if svc is None or not svc.enabled:
+        # A legacy row with a non-http(s) URL is treated like a disabled one.
+        if svc is None or not svc.enabled or url_problem(svc.url) is not None:
             _render_unavailable(slug)
             return
 
@@ -153,6 +154,11 @@ def open_in_new_tab(url: str) -> None:
     """Open ``url`` in a new browser tab, JSON-encoding it into the JS literal.
 
     Using ``json.dumps`` (rather than f-string interpolation) means a URL can
-    never break out of the JavaScript string and inject arbitrary code.
+    never break out of the JavaScript string and inject arbitrary code. A URL
+    that fails validation (legacy ``javascript:`` row) is never handed to
+    ``window.open`` — that would execute it in the Lyndrix origin.
     """
+    if url_problem(url) is not None:
+        ui.notify("Ungültige Service-URL – bitte in den Einstellungen korrigieren.", type="negative")
+        return
     ui.run_javascript(f"window.open({json.dumps(url)}, '_blank');")

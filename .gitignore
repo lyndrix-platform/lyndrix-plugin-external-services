@@ -1,77 +1,23 @@
-<<<<<<< HEAD
-vendor/
+# Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 htmlcov/
 .coverage
 .venv/
-.idea/
-.vscode/
-=======
-# ==========================================
-# LYNDRIX CORE - GITIGNORE
-# ==========================================
 
-# --- Python & Environments ---
-__pycache__/
-*.py[cod]
-*$py.class
-.venv/
-venv/
-ENV/
-env.bak/
-venv.bak/
-# NiceGUI build output
-.nicegui/
-# --- Datenbanken ---
-# Ignoriert die lokale SQLite Datenbank, da diese Umgebungsspezifisch ist
-*.db
-*.sqlite
-*.sqlite3
-lyndrix_core.db
+# Installed at plugin install time (requirements.txt)
+vendor/
 
-# --- Temporäre GitOps Klone ---
-# Ignoriert die Ordner, in die Lyndrix die SSOT Repositories zieht
-temp_ssot_apps/
-temp_ssot_infra/
-temp_*/
+# Plugin React UI build toolchain — the built bundle app/ui/static/ui_bundle.js IS committed
+node_modules/
 
-# --- Environment Variables & Secrets ---
-# Auch wenn wir Vault nutzen, falls mal eine lokale .env existiert, wird sie ignoriert
-.dev
-vault_data/*
-secure_data/vault_keys.enc
-secure_data
-!.env
-.env.*
-*.pem
-*.key
-Store
-# --- IDE & OS Files ---
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
-*.swp
-
-# --- Logs ---
-*.log
-logs/
-vault_recovery_keys.json
-
-db_data/
-vault_data/
-app/plugins/*
-app/plugins
-.cache
-vendor/*
-vendor
-/vendor/
->>>>>>> 5ba98ee (added gitignore)
-
-# Generated docs build output
+# Generated docs build output (mkdocs site_dir)
 .cache/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
