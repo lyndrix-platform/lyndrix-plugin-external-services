@@ -16,11 +16,30 @@ section *Navigation*) and stored in Vault under `plugins/<id>/settings`:
 
 ## Permissions
 
-Routes are gated per plugin: `plugin:lyndrix.plugin.external_services:api:read`
-for reads, `…:api:write` for every mutation (create, update, delete, reload).
-The manifest ships the roles *Viewer* (read), *Operator* and *Administrator*
-(read + write; *Administrator* is auto-mapped to `INT_ADMIN`). Global
-`api:read` / `api:write` grants keep working through the core's fallback.
+Reads need `plugin:lyndrix.plugin.external_services:api:read`; `POST /reload`
+needs `…:api:write`. Creating, changing and deleting a service requires the
+custom permission `external_services:manage`
+(`plugin:lyndrix.plugin.external_services:external_services:manage`). The core
+grants `…:api:write` to every user by baseline, so `manage` deliberately has no
+such baseline grant and no global `api:write` fallback: the service list is
+published as trusted sidebar links to everyone.
+
+The manifest ships the roles *Viewer* (read), *Operator* (read + write: can
+reload the sidebar entries, cannot create or repoint services) and
+*Administrator* (read + write + manage; auto-mapped to `INT_ADMIN`). Grant
+`external_services:manage` to whoever maintains the service list. Global
+`api:read` keeps working through the core's fallback.
+
+## URL validation
+
+- Only `http(s)://` URLs without userinfo are accepted.
+- A URL on the origin the request arrived on (Lyndrix itself) is refused with
+  422, because the shell would frame it same-origin.
+- Stored URLs are validated again before they are published or rendered. An
+  invalid legacy row gets no sidebar entry, `GET /` marks it with
+  `url_valid: false`, and both UIs show it as inert text. Check for such rows
+  after an upgrade with
+  `SELECT id, url FROM external_services WHERE url NOT LIKE 'http%'`.
 
 ## Cluster mode
 
