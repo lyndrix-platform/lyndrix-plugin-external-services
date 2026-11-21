@@ -13,7 +13,8 @@ Open **Plugins → External Services → gear**. This opens the plugin's setting
 - **Reload** — re-reads the services from the database and rebuilds the sidebar
   entries on every instance (`POST /reload`).
 
-Callers without the plugin write permission see the table read-only.
+Callers without the `external_services:manage` permission see the table read-only.
+Rows with an invalid stored URL are flagged *invalid URL* and are not published in the sidebar until the URL is corrected.
 
 ## Opening services
 
@@ -38,7 +39,9 @@ and the dashboard widget are unchanged.
 
 Base path `/api/plugins/lyndrix.plugin.external_services/` (authenticated):
 `GET /` list, `POST /` create or update by slug, `PUT /{id}` partial update,
-`DELETE /{id}`, `POST /reload`. In-process registration via the bus topic
+`DELETE /{id}`, `POST /reload`. Create, update and delete need the `external_services:manage`
+permission; list needs `api:read`, reload `api:write`. Validation errors are HTTP 422, a
+lost slug race is 409 (see [Configuration](configuration.md)). In-process registration via the bus topic
 `external_services:register` with the same payload. See the
 [README](https://github.com/lyndrix-platform/lyndrix-plugin-external-services#readme)
 for payload fields and examples.

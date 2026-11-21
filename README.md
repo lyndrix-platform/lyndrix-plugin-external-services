@@ -28,8 +28,8 @@ Both the REST API and the event bus accept the same fields:
 | `name` | string | yes | Display name shown in sidebar and tile |
 | `icon` | string | no | [Material Icon](https://fonts.google.com/icons) name (default: `open_in_browser`) |
 | `url` | string | yes | Full `http(s)://` URL of the external service (no userinfo) |
-| `type` | string | no | Integration type — currently `iframe` (default) |
-| `route` | string | no | Explicit URL slug; falls back to `service` |
+| `type` | string | no | Integration type — currently `iframe` (default); stored on create and update |
+| `route` | string | no | Explicit URL slug; falls back to `service` (`all-services` is reserved) |
 | `open_mode` | string | no | `iframe` (embedded, default) or `new_tab` — use `new_tab` for services that forbid embedding (X-Frame-Options / CSP) |
 | `show_in_nav` | bool | no | Whether to add a sidebar entry (default: `true`) |
 | `description` | string | no | Short description shown on the overview tile |
@@ -43,9 +43,17 @@ Base path: `/api/plugins/lyndrix.plugin.external_services/`
 
 > **Authentication required.** The router is mounted by core via
 > `ctx.register_routes()` and every route is auth-enforced. Reads need
-> `plugin:lyndrix.plugin.external_services:api:read`, mutations
-> `…:api:write` (global `api:read` / `api:write` keep working). Send a valid
-> Lyndrix API key or bearer token with each request.
+> `plugin:lyndrix.plugin.external_services:api:read` (global `api:read` keeps
+> working). Create, update and delete need the custom permission
+> `external_services:manage` (admin role; the baseline `api:write` grant is not
+> enough), `POST /reload` needs `…:api:write`. Send a valid Lyndrix API key or
+> bearer token with each request.
+>
+> **Errors.** Validation problems (fields longer than their columns, `open_mode`
+> other than `iframe`/`new_tab`, invalid URL, a URL on Lyndrix's own origin, the
+> reserved slug `all-services`) are HTTP 422; a lost unique-slug race is 409.
+> `GET /` includes `url_valid` per service; rows with `url_valid: false` are not
+> published in the sidebar.
 
 ### Register or update a service
 
@@ -66,7 +74,7 @@ X-API-Key: <your-api-key>
 }
 ```
 
-The call is **idempotent** — if a service with the same slug already exists it is updated in place.
+The call is **idempotent** — if a service with the same slug already exists it is updated in place. Requires `external_services:manage`.
 
 ### List all services
 
